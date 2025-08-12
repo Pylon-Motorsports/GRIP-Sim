@@ -1,0 +1,53 @@
+[gd_scene load_steps=5 format=3 uid="uid://ba7bslf8w4hae"]
+
+[ext_resource type="Script" uid="uid://cqmqeiq1j8e2l" path="res://character_body_3d.gd" id="2_ufqay"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_ufqay"]
+size = Vector2(200, 200)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_0kftu"]
+size = Vector3(1.69, 1.39, 4.35)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_3c7s4"]
+top_radius = 0.24
+bottom_radius = 0.24
+height = 0.18
+
+[node name="Node3D" type="Node3D"]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.984808, 0.173648, 0, -0.0593912, 0.336824, 0.939693, 0.163176, -0.925417, 0.34202, 0, 0, 0)
+light_angular_distance = 0.5
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+mesh = SubResource("PlaneMesh_ufqay")
+
+[node name="CharacterBody3D" type="CharacterBody3D" parent="."]
+script = ExtResource("2_ufqay")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="CharacterBody3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.845, 0)
+shape = SubResource("BoxShape3D_0kftu")
+
+[node name="Wheel_RR" type="MeshInstance3D" parent="CharacterBody3D"]
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0.8, 0.24, 1.26)
+mesh = SubResource("CylinderMesh_3c7s4")
+skeleton = NodePath("")
+
+[node name="Wheel_LR" type="MeshInstance3D" parent="CharacterBody3D"]
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, -0.8, 0.24, 1.26)
+mesh = SubResource("CylinderMesh_3c7s4")
+skeleton = NodePath("")
+
+[node name="Wheel_RF" type="MeshInstance3D" parent="CharacterBody3D"]
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0.8, 0.24, -1.26)
+mesh = SubResource("CylinderMesh_3c7s4")
+skeleton = NodePath("")
+
+[node name="Wheel_LF" type="MeshInstance3D" parent="CharacterBody3D"]
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, -0.8, 0.24, -1.26)
+mesh = SubResource("CylinderMesh_3c7s4")
+skeleton = NodePath("")
+
+[node name="Camera3D" type="Camera3D" parent="CharacterBody3D"]
+transform = Transform3D(-1, 1.51808e-08, -8.60946e-08, 0, 0.984808, 0.173648, 8.74228e-08, 0.173648, -0.984808, 0, 3, -5)
