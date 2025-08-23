@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3 uid="uid://0r26hd34lylg"]
+[gd_scene load_steps=3 format=3 uid="uid://0r26hd34lylg"]
 
 [ext_resource type="Script" uid="uid://353llhio4oif" path="res://button.gd" id="1_06t4h"]
+[ext_resource type="Script" uid="uid://ucc7ixh4mhiq" path="res://main_menu.gd" id="1_7vrkn"]
 
 [node name="Control" type="Control"]
 layout_mode = 3
@@ -9,12 +10,77 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
+script = ExtResource("1_7vrkn")
 
-[node name="Button" type="Button" parent="."]
+[node name="ButtonStart" type="Button" parent="."]
 layout_mode = 0
-offset_left = 425.0
+offset_left = 75.0
 offset_top = 250.0
-offset_right = 725.0
+offset_right = 375.0
 offset_bottom = 400.0
 text = "START"
 script = ExtResource("1_06t4h")
+
+[node name="ButtonMapGas" type="Button" parent="."]
+layout_mode = 0
+offset_left = 650.0
+offset_top = 50.0
+offset_right = 800.0
+offset_bottom = 100.0
+text = "Map Gas"
+
+[node name="RichTextLabel" type="RichTextLabel" parent="ButtonMapGas"]
+layout_mode = 0
+offset_left = 175.0
+offset_right = 325.0
+offset_bottom = 50.0
+text = "TODO"
+vertical_alignment = 1
+
+[node name="ButtonMapBrake" type="Button" parent="."]
+layout_mode = 0
+offset_left = 650.0
+offset_top = 125.0
+offset_right = 800.0
+offset_bottom = 175.0
+text = "Map Brake"
+
+[node name="RichTextLabel" type="RichTextLabel" parent="ButtonMapBrake"]
+layout_mode = 0
+offset_left = 175.0
+offset_right = 325.0
+offset_bottom = 50.0
+text = "TODO"
+vertical_alignment = 1
+
+[node name="ButtonMapLeft" type="Button" parent="."]
+layout_mode = 0
+offset_left = 650.0
+offset_top = 200.0
+offset_right = 800.0
+offset_bottom = 250.0
+text = "Map Left"
+
+[node name="RichTextLabel" type="RichTextLabel" parent="ButtonMapLeft"]
+layout_mode = 0
+offset_left = 175.0
+offset_right = 325.0
+offset_bottom = 50.0
+text = "TODO"
+vertical_alignment = 1
+
+[node name="ButtonMapRight" type="Button" parent="."]
+layout_mode = 0
+offset_left = 650.0
+offset_top = 275.0
+offset_right = 800.0
+offset_bottom = 325.0
+text = "Map Right"
+
+[node name="RichTextLabel" type="RichTextLabel" parent="ButtonMapRight"]
+layout_mode = 0
+offset_left = 175.0
+offset_right = 325.0
+offset_bottom = 50.0
+text = "TODO"
+vertical_alignment = 1
