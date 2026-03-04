@@ -6,5 +6,5 @@
 /// Swap with a procedural generator or a file/DB loader when ready.
 class TestStageGenerator : public IRoadGenerator {
 public:
-    [[nodiscard]] std::vector<grip::GripSegment> generate() override;
+    [[nodiscard]] std::vector<grip_schema::GripSegment> generate() override;
 };

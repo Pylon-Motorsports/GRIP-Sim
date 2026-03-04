@@ -6,7 +6,7 @@
 
 /// GRIP schema types — mirrors stage-geometry.schema.json from Pylon-Motorsports/GRIP.
 /// These are pure data; no logic lives here.
-namespace grip {
+namespace grip_schema {
 
 /// Surface type enum — matches surfaceEnum in the schema.
 enum class Surface : uint8_t {
@@ -96,4 +96,4 @@ struct GripSegment {
     float     startHeadingRad { 0.f };
 };
 
-} // namespace grip
+} // namespace grip_schema

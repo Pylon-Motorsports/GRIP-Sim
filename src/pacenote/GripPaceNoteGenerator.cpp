@@ -42,11 +42,11 @@ std::string GripPaceNoteGenerator::durationFromAngle(float angleDeg, float lengt
     return "";
 }
 
-std::vector<std::string> GripPaceNoteGenerator::decoratorsFromSegment(const grip::GripSegment& seg)
+std::vector<std::string> GripPaceNoteGenerator::decoratorsFromSegment(const grip_schema::GripSegment& seg)
 {
     std::vector<std::string> decs;
     // Add "Care" if there are features close to the road
-    auto hasFeature = [&](const std::vector<grip::RoadsideFeature>& feats) {
+    auto hasFeature = [&](const std::vector<grip_schema::RoadsideFeature>& feats) {
         for (const auto& f : feats)
             if (f.distanceFromRoadCenterCentimeters < 150) return true;
         return false;
@@ -59,7 +59,7 @@ std::vector<std::string> GripPaceNoteGenerator::decoratorsFromSegment(const grip
 // ---------------------------------------------------------------------------
 // loadStage — compute note entries from segment geometry
 // ---------------------------------------------------------------------------
-void GripPaceNoteGenerator::loadStage(const std::vector<grip::GripSegment>& segments)
+void GripPaceNoteGenerator::loadStage(const std::vector<grip_schema::GripSegment>& segments)
 {
     entries_.clear();
 

@@ -1,6 +1,6 @@
 #include "TestStageGenerator.h"
 
-using namespace grip;
+using namespace grip_schema;
 
 static GripSegment makeSeg(
     int   index,

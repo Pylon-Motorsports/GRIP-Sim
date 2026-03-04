@@ -3,7 +3,7 @@
 #include <cmath>
 #include <algorithm>
 
-using namespace grip;
+using namespace grip_schema;
 
 static constexpr float DEG2RAD = glm::pi<float>() / 180.f;
 static constexpr glm::vec3 UP  { 0.f, 1.f, 0.f };

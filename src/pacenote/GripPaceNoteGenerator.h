@@ -10,7 +10,7 @@ class GripPaceNoteGenerator : public IPaceNoteGenerator {
 public:
     explicit GripPaceNoteGenerator(float triggerDistanceM = 50.f);
 
-    void loadStage(const std::vector<grip::GripSegment>& segments) override;
+    void loadStage(const std::vector<grip_schema::GripSegment>& segments) override;
     [[nodiscard]] std::optional<PaceNote> evaluate(const VehicleState& state) override;
 
 private:
@@ -27,5 +27,5 @@ private:
     static CornerSeverity  severityFromAngle(float angleDeg);
     static CornerDirection directionFromAngle(float angleDeg);
     static std::string     durationFromAngle(float angleDeg, float lengthM);
-    static std::vector<std::string> decoratorsFromSegment(const grip::GripSegment& seg);
+    static std::vector<std::string> decoratorsFromSegment(const grip_schema::GripSegment& seg);
 };

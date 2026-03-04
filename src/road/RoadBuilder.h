@@ -13,6 +13,6 @@ class RoadBuilder {
 public:
     /// Build the road mesh from segments. Mutates segments to fill derived fields.
     /// Returns the built mesh (dirty = true, ready for upload).
-    [[nodiscard]] static RoadMesh build(std::vector<grip::GripSegment>& segments);
+    [[nodiscard]] static RoadMesh build(std::vector<grip_schema::GripSegment>& segments);
 
 };

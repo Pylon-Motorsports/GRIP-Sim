@@ -13,7 +13,7 @@ public:
 
     /// Load the stage geometry so the generator can compute notes.
     /// Called once after IRoadGenerator::generate().
-    virtual void loadStage(const std::vector<grip::GripSegment>& segments) = 0;
+    virtual void loadStage(const std::vector<grip_schema::GripSegment>& segments) = 0;
 
     /// Called every physics step. Returns a note when the car crosses a trigger distance.
     /// Each note is emitted exactly once (trigger consumed after firing).

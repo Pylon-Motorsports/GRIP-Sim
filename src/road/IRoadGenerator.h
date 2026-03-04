@@ -10,5 +10,5 @@ public:
 
     /// Generate and return a sequence of GRIP segments describing the stage.
     /// Called once at startup by the Engine.
-    [[nodiscard]] virtual std::vector<grip::GripSegment> generate() = 0;
+    [[nodiscard]] virtual std::vector<grip_schema::GripSegment> generate() = 0;
 };
