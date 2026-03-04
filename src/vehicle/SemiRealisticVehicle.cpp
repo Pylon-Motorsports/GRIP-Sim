@@ -73,8 +73,8 @@ void SemiRealisticVehicle::integrate(const InputFrame& input, float dt)
                        * params_.drivetrainEfficiency / rw;
 
     // --- Braking force ---
-    float brakeForceFront = input.brake * params_.maxBrakeForce * params_.brakeBiasFront;
-    float brakeForceRear  = input.brake * params_.maxBrakeForce * (1.f - params_.brakeBiasFront);
+    float brakeForceFront = input.brake * params_.maxBrakeForceN * params_.brakeBiasFront;
+    float brakeForceRear  = input.brake * params_.maxBrakeForceN * (1.f - params_.brakeBiasFront);
     float totalBrake      = brakeForceFront + brakeForceRear;
 
     // --- Aerodynamic drag ---

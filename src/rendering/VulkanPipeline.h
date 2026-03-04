@@ -1,5 +1,6 @@
 #pragma once
 #include "VulkanContext.h"
+#include <glm/glm.hpp>
 #include <string>
 
 /// Push constants layout shared between CPU and shaders.

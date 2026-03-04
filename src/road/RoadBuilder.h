@@ -15,10 +15,4 @@ public:
     /// Returns the built mesh (dirty = true, ready for upload).
     [[nodiscard]] static RoadMesh build(std::vector<grip::GripSegment>& segments);
 
-private:
-    /// Number of tessellation steps for a segment given its angle delta.
-    static int tessSteps(float angleDeltaDeg);
-
-    /// Convert a Surface enum to a float surfaceId for the fragment shader lookup table.
-    static float surfaceId(grip::Surface s);
 };
