@@ -4,6 +4,7 @@
 
 /// Chase camera that follows the car from behind and above.
 /// Lerps toward a target position each frame for smooth lag.
+/// Body roll from physics is reflected in the camera's up-vector for natural feel.
 class Camera {
 public:
     struct Params {
@@ -13,6 +14,7 @@ public:
         float nearPlane       { 0.1f };
         float farPlane        { 800.f };
         float lagFactor       { 0.08f }; ///< Lerp factor per frame (0=frozen, 1=instant)
+        float rollScale       { 0.5f };  ///< Scale applied to physics roll for camera up-vector
     };
 
     explicit Camera(Params p = {}) : params_(p) {}
@@ -29,4 +31,5 @@ private:
     glm::vec3 smoothPos_    { 0.f, 5.f, -10.f };
     glm::vec3 smoothTarget_ { 0.f, 0.f,   0.f };
     float     aspectRatio_  { 16.f / 9.f };
+    float     smoothRoll_   { 0.f };  ///< Smoothed body roll from physics (radians)
 };

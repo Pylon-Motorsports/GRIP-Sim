@@ -47,6 +47,8 @@ compile_shaders(
     SOURCES
         shaders/road.vert
         shaders/road.frag
+        shaders/sky.vert
+        shaders/sky.frag
         shaders/debug_line.vert
         shaders/debug_line.frag
     OUTPUT_DIR
@@ -68,6 +70,7 @@ set(SOURCES
     src/road/RoadBuilder.cpp
     src/road/TestStageGenerator.cpp
     src/vehicle/SemiRealisticVehicle.cpp
+    src/vehicle/MultiBodyVehicle.cpp
     src/input/SdlInputProvider.cpp
     src/pacenote/PaceNote.cpp
     src/pacenote/GripPaceNoteGenerator.cpp
@@ -107,3 +110,22 @@ if(WIN32)
 endif()
 
 include(cmake/CompilerFlags.cmake)
+
+# ---------------------------------------------------------------------------
+# Vehicle physics unit tests (no Vulkan/SDL2 dependency)
+# ---------------------------------------------------------------------------
+
+set(PHYSICS_TEST_SOURCES
+    tests/vehicle_physics_test.cpp
+    src/vehicle/MultiBodyVehicle.cpp
+)
+
+add_executable(VehiclePhysicsTest ${PHYSICS_TEST_SOURCES})
+
+target_include_directories(VehiclePhysicsTest PRIVATE src/)
+target_compile_definitions(VehiclePhysicsTest PRIVATE GLM_ENABLE_EXPERIMENTAL)
+target_compile_features(VehiclePhysicsTest PRIVATE cxx_std_20)
+target_link_libraries(VehiclePhysicsTest PRIVATE glm::glm)
+
+enable_testing()
+add_test(NAME VehiclePhysics COMMAND VehiclePhysicsTest)

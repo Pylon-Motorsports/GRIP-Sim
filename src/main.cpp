@@ -13,8 +13,8 @@
 // Concrete implementations
 #include "road/TestStageGenerator.h"
 #include "rendering/VulkanRoadRenderer.h"
-#include "vehicle/SemiRealisticVehicle.h"
-#include "vehicle/VehicleParams.h"
+#include "vehicle/MultiBodyVehicle.h"
+#include "vehicle/MultiBodyParams.h"
 #include "input/SdlInputProvider.h"
 #include "pacenote/GripPaceNoteGenerator.h"
 #include "pacenote/ConsolePaceNoteReader.h"
@@ -39,7 +39,7 @@ int main(int /*argc*/, char* /*argv*/[])
 
     // --- Vehicle dynamics ---
     registry.bind<IVehicleDynamics>(
-        std::make_shared<SemiRealisticVehicle>(VehicleParams{}));
+        std::make_shared<MultiBodyVehicle>(MultiBodyParams{}));
 
     // --- Rendering ---
     registry.bind<IRoadRenderer>(

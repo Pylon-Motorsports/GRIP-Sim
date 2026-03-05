@@ -6,8 +6,8 @@
 struct VehicleState {
     glm::vec3 position       { 0.f, 0.f, 0.f }; ///< World space, Y-up
     glm::vec3 velocity       { 0.f, 0.f, 0.f }; ///< World space m/s
-    float     headingRad     { 0.f };            ///< Yaw from +Z axis, CCW positive
-    float     speedMs        { 0.f };            ///< Scalar speed magnitude
+    float     headingRad     { 0.f };            ///< Yaw: angle from +Z axis, clockwise = positive
+    float     speedMs        { 0.f };            ///< Scalar forward speed
     float     slipAngleRad   { 0.f };            ///< Front axle slip angle
     float     throttle       { 0.f };            ///< 0..1 applied this step
     float     brake          { 0.f };            ///< 0..1 applied this step
@@ -18,4 +18,6 @@ struct VehicleState {
     int       segmentIndex   { 0 };              ///< Which GRIP segment the car occupies
     float     segmentProgress{ 0.f };            ///< 0..1 along current segment
     float     odoMeters      { 0.f };            ///< Total distance driven in metres
+    float     rollRad        { 0.f };            ///< Body roll (rad): positive = right side down
+    float     pitchRad       { 0.f };            ///< Body pitch (rad): positive = nose down
 };

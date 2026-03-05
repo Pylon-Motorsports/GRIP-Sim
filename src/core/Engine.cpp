@@ -8,6 +8,7 @@
 #include "rendering/RoadMesh.h"
 #include "vehicle/IVehicleDynamics.h"
 #include "vehicle/SemiRealisticVehicle.h"
+#include "vehicle/MultiBodyVehicle.h"
 #include "pacenote/IPaceNoteGenerator.h"
 #include "pacenote/IPaceNoteReader.h"
 #include <SDL2/SDL.h>
@@ -67,10 +68,12 @@ void Engine::buildRoad()
     *roadMesh_ = RoadBuilder::build(segments);
 
     // Give centreline data to vehicle for segment tracking
-    if (auto* srv = dynamic_cast<SemiRealisticVehicle*>(vehicle_.get())) {
-        srv->setCenterlinePoints(roadMesh_->centerlinePoints,
-                                 roadMesh_->segmentStartVertex, 4);
-    }
+    if (auto* v = dynamic_cast<SemiRealisticVehicle*>(vehicle_.get()))
+        v->setCenterlinePoints(roadMesh_->centerlinePoints,
+                               roadMesh_->segmentStartVertex, 12);
+    else if (auto* v2 = dynamic_cast<MultiBodyVehicle*>(vehicle_.get()))
+        v2->setCenterlinePoints(roadMesh_->centerlinePoints,
+                                roadMesh_->segmentStartVertex, 12);
 
     noteGen_->loadStage(segments);
     renderer_->uploadMesh(*roadMesh_);

@@ -16,15 +16,25 @@ void Camera::update(const VehicleState& car, float /*dt*/, float aspectRatio)
                            + glm::vec3(0.f, params_.followHeightM, 0.f);
     glm::vec3 targetLookAt = car.position + glm::vec3(0.f, 0.5f, 0.f);
 
-    // Lerp for smooth lag
-    float lag = glm::clamp(params_.lagFactor, 0.f, 1.f);
+    // Lerp camera position
+    float lag     = glm::clamp(params_.lagFactor, 0.f, 1.f);
     smoothPos_    = glm::mix(smoothPos_,    targetPos,    lag);
     smoothTarget_ = glm::mix(smoothTarget_, targetLookAt, lag * 1.5f);
+
+    // Smooth the body roll from physics so the camera tilts naturally into corners.
+    float targetRoll = car.rollRad * params_.rollScale;
+    smoothRoll_ = glm::mix(smoothRoll_, targetRoll, 0.08f);
 }
 
 glm::mat4 Camera::viewMatrix() const
 {
-    return glm::lookAt(smoothPos_, smoothTarget_, glm::vec3(0.f, 1.f, 0.f));
+    // Rotate the world-up vector by smoothRoll_ around the camera's forward axis
+    // to achieve the lean-into-corner feel.
+    glm::vec3 camForward = glm::normalize(smoothTarget_ - smoothPos_);
+    glm::mat4 rollMat    = glm::rotate(glm::mat4(1.f), smoothRoll_, camForward);
+    glm::vec3 rolledUp   = glm::vec3(rollMat * glm::vec4(0.f, 1.f, 0.f, 0.f));
+
+    return glm::lookAt(smoothPos_, smoothTarget_, rolledUp);
 }
 
 glm::mat4 Camera::projectionMatrix() const
