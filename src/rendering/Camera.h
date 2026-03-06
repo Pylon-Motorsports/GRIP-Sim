@@ -11,7 +11,7 @@ public:
         float followDistanceM { 8.f  };  ///< Metres behind the car
         float followHeightM   { 2.5f };  ///< Metres above the car
         float fovYDeg         { 70.f };
-        float nearPlane       { 0.1f };
+        float nearPlane       { 0.5f };   ///< Raised from 0.1 to reduce Z-fighting
         float farPlane        { 800.f };
         float lagFactor       { 0.08f }; ///< Lerp factor per frame (0=frozen, 1=instant)
         float rollScale       { 0.5f };  ///< Scale applied to physics roll for camera up-vector

@@ -71,10 +71,13 @@ void SdlInputProvider::poll()
     }
 
     if (controller_) {
-        // Steer: left stick X axis
+        // Steer: left stick X axis with power curve for fine control near center.
+        // Exponent 2.0 = quadratic: half-stick gives 25% steering, full-stick = full lock.
         int16_t steerRaw = SDL_GameControllerGetAxis(controller_,
             SDL_CONTROLLER_AXIS_LEFTX);
-        frame_.steer = normalizeAxis(steerRaw);
+        float steerLinear = normalizeAxis(steerRaw);
+        float sign = (steerLinear >= 0.f) ? 1.f : -1.f;
+        frame_.steer = sign * steerLinear * steerLinear;  // |x|^2 preserving sign
 
         // Throttle: right trigger
         int16_t throttleRaw = SDL_GameControllerGetAxis(controller_,

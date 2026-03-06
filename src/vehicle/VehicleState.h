@@ -20,4 +20,10 @@ struct VehicleState {
     float     odoMeters      { 0.f };            ///< Total distance driven in metres
     float     rollRad        { 0.f };            ///< Body roll (rad): positive = right side down
     float     pitchRad       { 0.f };            ///< Body pitch (rad): positive = nose down
+    float     terrainRollRad { 0.f };            ///< Ground slope roll at CG position (rad)
+    float     terrainPitchRad{ 0.f };            ///< Ground slope pitch at CG position (rad)
+    glm::vec3 wheelPos[4]   {};                  ///< World-space wheel hub centres [FL,FR,RL,RR]
+    float     wheelGroundHeight[4] {};             ///< Ground Y at each wheel contact [FL,FR,RL,RR]
+    float     suspLength[4]  {};                   ///< Current spring length per corner [FL,FR,RL,RR]
+    glm::vec3 suspTopPos[4]  {};                   ///< World-space suspension top attachment [FL,FR,RL,RR]
 };

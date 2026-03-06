@@ -34,7 +34,21 @@ glm::mat4 Camera::viewMatrix() const
     glm::mat4 rollMat    = glm::rotate(glm::mat4(1.f), smoothRoll_, camForward);
     glm::vec3 rolledUp   = glm::vec3(rollMat * glm::vec4(0.f, 1.f, 0.f, 0.f));
 
-    return glm::lookAt(smoothPos_, smoothTarget_, rolledUp);
+    // glm::lookAt computes right = cross(forward, up), which gives -X for a Z-forward
+    // world (camera behind car looking toward +Z). This mirrors the scene so that
+    // world +X appears on screen left. Fix: use cross(up, forward) so world +X = screen right.
+    glm::vec3 right = glm::normalize(glm::cross(rolledUp, camForward));
+    glm::vec3 up    = glm::cross(camForward, right);
+
+    // Build view matrix (column-major: mat[col][row])
+    glm::mat4 view(1.f);
+    view[0][0] =  right.x;       view[1][0] =  right.y;       view[2][0] =  right.z;
+    view[0][1] =  up.x;          view[1][1] =  up.y;          view[2][1] =  up.z;
+    view[0][2] = -camForward.x;  view[1][2] = -camForward.y;  view[2][2] = -camForward.z;
+    view[3][0] = -glm::dot(right,      smoothPos_);
+    view[3][1] = -glm::dot(up,         smoothPos_);
+    view[3][2] =  glm::dot(camForward, smoothPos_);
+    return view;
 }
 
 glm::mat4 Camera::projectionMatrix() const

@@ -3,12 +3,14 @@
 #include "input/IInputProvider.h"
 #include "road/IRoadGenerator.h"
 #include "road/RoadBuilder.h"
+#include "road/TerrainQuery.h"
 #include "rendering/IRoadRenderer.h"
 #include "rendering/Camera.h"
 #include "rendering/RoadMesh.h"
 #include "vehicle/IVehicleDynamics.h"
 #include "vehicle/SemiRealisticVehicle.h"
 #include "vehicle/MultiBodyVehicle.h"
+#include "vehicle/CubeVehicle.h"
 #include "pacenote/IPaceNoteGenerator.h"
 #include "pacenote/IPaceNoteReader.h"
 #include <SDL2/SDL.h>
@@ -54,8 +56,8 @@ bool Engine::initialize()
     // Build road
     buildRoad();
 
-    // Reset car to start of stage
-    vehicle_->reset({ 0.f, 0.f, 0.f }, 0.f);
+    // Reset car to start of actual stage (segment after pre-start pad)
+    resetCarToStart();
 
     initialized_ = true;
     LOG_INFO("Engine initialized");
@@ -64,18 +66,36 @@ bool Engine::initialize()
 
 void Engine::buildRoad()
 {
-    auto segments = roadGen_->generate();
-    *roadMesh_ = RoadBuilder::build(segments);
+    stageSegments_ = roadGen_->generate();
+    *roadMesh_ = RoadBuilder::build(stageSegments_);
 
-    // Give centreline data to vehicle for segment tracking
+    // Build terrain query from mesh triangles
+    std::vector<glm::vec3> meshPositions;
+    meshPositions.reserve(roadMesh_->vertices.size());
+    for (const auto& v : roadMesh_->vertices)
+        meshPositions.push_back(v.position);
+
+    TerrainQuery terrain;
+    terrain.buildFromMesh(meshPositions, roadMesh_->indices);
+
+    // Give centreline + terrain data to vehicle
     if (auto* v = dynamic_cast<SemiRealisticVehicle*>(vehicle_.get()))
         v->setCenterlinePoints(roadMesh_->centerlinePoints,
-                               roadMesh_->segmentStartVertex, 12);
-    else if (auto* v2 = dynamic_cast<MultiBodyVehicle*>(vehicle_.get()))
+                               roadMesh_->segmentStartVertex, 7);
+    else if (auto* v2 = dynamic_cast<MultiBodyVehicle*>(vehicle_.get())) {
         v2->setCenterlinePoints(roadMesh_->centerlinePoints,
-                                roadMesh_->segmentStartVertex, 12);
+                                roadMesh_->segmentStartVertex, 7);
+        v2->setTerrainQuery(terrain);
+        v2->setTrees(roadMesh_->trees);
+    }
+    else if (auto* v3 = dynamic_cast<CubeVehicle*>(vehicle_.get())) {
+        v3->setCenterlinePoints(roadMesh_->centerlinePoints,
+                                roadMesh_->segmentStartVertex, 7);
+        v3->setTerrainQuery(terrain);
+        v3->setTrees(roadMesh_->trees);
+    }
 
-    noteGen_->loadStage(segments);
+    noteGen_->loadStage(stageSegments_);
     renderer_->uploadMesh(*roadMesh_);
     roadMesh_->dirty = false;
     LOG_INFO("Road built: %zu vertices, %zu indices",
@@ -98,7 +118,7 @@ void Engine::run()
 
         const auto& frame = input_->frame();
         if (frame.resetCar) {
-            vehicle_->reset({ 0.f, 0.f, 0.f }, 0.f);
+            resetCarToStart();
         }
 
         // --- Frame timing ---
@@ -124,8 +144,8 @@ void Engine::run()
         camera_->update(state, static_cast<float>(dt), aspect);
         renderer_->setViewProjection(camera_->viewMatrix(), camera_->projectionMatrix());
 
-        // Simple car transform: identity model (car is not rendered in POC, road only)
         renderer_->setCarTransform(glm::translate(glm::mat4(1.f), state.position));
+        renderer_->setVehicleState(state);
 
         renderer_->drawFrame();
     }
@@ -134,13 +154,24 @@ void Engine::run()
 void Engine::tick(const InputFrame& input, float dt)
 {
     vehicle_->integrate(input, dt);
-    const auto& state = vehicle_->state();
 
-    // Evaluate and deliver pace notes
-    auto note = noteGen_->evaluate(state);
-    if (note.has_value()) {
-        noteReader_->speak(*note);
-    }
+    // Pace notes disabled for now — revisit later
+    // const auto& state = vehicle_->state();
+    // auto note = noteGen_->evaluate(state);
+    // if (note.has_value()) {
+    //     noteReader_->speak(*note);
+    // }
+}
+
+void Engine::resetCarToStart()
+{
+    // Skip the pre-start pad (segment 0 with indexSequence=-1) if present
+    size_t startSeg = 0;
+    if (stageSegments_.size() > 1 && stageSegments_[0].indexSequence < 0)
+        startSeg = 1;
+
+    vehicle_->reset(stageSegments_[startSeg].startPosition,
+                    stageSegments_[startSeg].startHeadingRad);
 }
 
 void Engine::shutdown()

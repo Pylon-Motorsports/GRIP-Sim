@@ -1,7 +1,9 @@
 #pragma once
 #include "ModuleRegistry.h"
 #include "input/InputFrame.h"
+#include "road/GripTypes.h"
 #include <memory>
+#include <vector>
 
 // Forward declarations
 class IInputProvider;
@@ -33,6 +35,7 @@ public:
 private:
     void tick(const InputFrame& input, float dt);
     void buildRoad();
+    void resetCarToStart();
 
     ModuleRegistry& registry_;
 
@@ -46,6 +49,7 @@ private:
 
     std::unique_ptr<Camera>    camera_;
     std::unique_ptr<RoadMesh>  roadMesh_;
+    std::vector<grip_schema::GripSegment> stageSegments_;
 
     struct SDL_Window* window_ { nullptr };
     bool initialized_ { false };

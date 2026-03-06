@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include "RoadMesh.h"
+#include "vehicle/VehicleState.h"
 
 struct SDL_Window;
 
@@ -22,6 +23,9 @@ public:
 
     /// Set the car world transform for the debug wireframe box.
     virtual void setCarTransform(const glm::mat4& model) = 0;
+
+    /// Pass vehicle state to renderer for debug geometry (box body + cylinder wheels).
+    virtual void setVehicleState(const VehicleState& /*state*/) {}
 
     /// Record and submit one rendered frame.
     virtual void drawFrame() = 0;

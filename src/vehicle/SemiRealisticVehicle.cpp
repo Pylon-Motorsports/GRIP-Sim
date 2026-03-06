@@ -27,7 +27,6 @@ void SemiRealisticVehicle::reset(glm::vec3 position, float headingRad)
 float SemiRealisticVehicle::engineTorque(float throttle, float rpm) const
 {
     float rpmNorm = rpm / params_.maxRpm;  // 0..1
-    // Simple bell curve biased toward low-mid RPM
     float curve = 1.f - 0.4f * (rpmNorm - 0.6f) * (rpmNorm - 0.6f) / 0.36f;
     curve = std::clamp(curve, 0.2f, 1.f);
     return throttle * params_.maxTorqueNm * curve;
@@ -46,6 +45,22 @@ void SemiRealisticVehicle::autoShift()
 
 // ---------------------------------------------------------------------------
 // integrate — bicycle model, RWD
+//
+// Coordinate conventions (body frame, y-right):
+//   vx_     > 0 = forward
+//   vy_     > 0 = rightward (positive x in world when heading=0)
+//   yawRate_> 0 = turning right  (heading increases → car points toward +X)
+//
+// Slip angle sign convention:
+//   Front contact point lateral velocity: vy_ - yawRate_*lf
+//     (front swings LEFT when turning right → negative for right turn)
+//   Rear contact point lateral velocity:  vy_ + yawRate_*lr
+//     (rear  swings RIGHT when turning right → positive for right turn)
+//   Lateral tyre force: Fy = -C * alpha  (resists slip → centripetal for turns)
+//
+// Yaw moment:
+//   Mz (right-hand about +Y/up): negative = CW = right turn
+//   yawRate_ -= Mz/Iz  (so negative Mz increases yawRate_, turning right)
 // ---------------------------------------------------------------------------
 void SemiRealisticVehicle::integrate(const InputFrame& input, float dt)
 {
@@ -60,17 +75,17 @@ void SemiRealisticVehicle::integrate(const InputFrame& input, float dt)
     const float Nref  = params_.peakNormalForceN;
 
     // --- Weight transfer ---
-    float longAccel    = (vx_ - prevSpeedMs_) / dt;
-    prevSpeedMs_       = vx_;
-    float deltaWeight  = -(mass * longAccel * params_.cgHeightM) / wb;
-    float Nf           = std::max(0.f, mass * G * (lr / wb) + deltaWeight);
-    float Nr           = std::max(0.f, mass * G * (lf / wb) - deltaWeight);
+    float longAccel   = (vx_ - prevSpeedMs_) / dt;
+    prevSpeedMs_      = vx_;
+    float deltaWeight = -(mass * longAccel * params_.cgHeightM) / wb;
+    float Nf          = std::max(0.f, mass * G * (lr / wb) + deltaWeight);
+    float Nr          = std::max(0.f, mass * G * (lf / wb) - deltaWeight);
 
     // --- Drive force (RWD) ---
-    float gearRatio    = params_.gearRatios[state_.currentGear - 1];
-    float torque       = engineTorque(input.throttle, state_.engineRpm);
-    float driveForce   = torque * gearRatio * params_.diffRatio
-                       * params_.drivetrainEfficiency / rw;
+    float gearRatio  = params_.gearRatios[state_.currentGear - 1];
+    float torque     = engineTorque(input.throttle, state_.engineRpm);
+    float driveForce = torque * gearRatio * params_.diffRatio
+                     * params_.drivetrainEfficiency / rw;
 
     // --- Braking force ---
     float brakeForceFront = input.brake * params_.maxBrakeForceN * params_.brakeBiasFront;
@@ -81,38 +96,66 @@ void SemiRealisticVehicle::integrate(const InputFrame& input, float dt)
     float drag = 0.5f * params_.airDensityKgM3 * params_.Cd * params_.frontalAreaM2
                * vx_ * std::abs(vx_);
 
-    // --- Slip angles (bicycle model) ---
+    // --- Steering angle: +input.steer=right, +steerAngle=right (consistent) ---
     float steerAngle = input.steer * params_.maxSteerAngleRad;
+
+    // --- Slip angles (body frame, y-right convention) ---
     float alpha_f = 0.f, alpha_r = 0.f;
+    float Fy_f = 0.f,    Fy_r = 0.f;
+
     if (std::abs(vx_) > 0.5f) {
-        alpha_f = steerAngle - std::atan2(vy_ + yawRate_ * lf, std::abs(vx_));
-        alpha_r =             -std::atan2(vy_ - yawRate_ * lr, std::abs(vx_));
+        // Front contact point lateral velocity:
+        //   front swings LEFT when turning right → vy_ - yawRate_*lf
+        float v_lat_f = vy_ - yawRate_ * lf;
+        // Rear contact point lateral velocity:
+        //   rear swings RIGHT when turning right → vy_ + yawRate_*lr
+        float v_lat_r = vy_ + yawRate_ * lr;
+
+        alpha_f = steerAngle - std::atan2(v_lat_f, std::abs(vx_));
+        alpha_r =              std::atan2(v_lat_r, std::abs(vx_));
+
+        // Linear cornering with peak-load saturation
+        float sat_f = std::min(1.f, Nf / Nref);
+        float sat_r = std::min(1.f, Nr / Nref);
+        Fy_f = -Caf * alpha_f * sat_f;
+        Fy_r = -Car * alpha_r * sat_r;
+
+        // Friction circle: cap lateral force at tyre friction limit (μ × normal load).
+        // Prevents the linear model from producing unrealistic forces at large slip angles
+        // (e.g. full keyboard steer at low speed → correct physics, no spin-out).
+        static constexpr float TYRE_MU = 1.2f;
+        Fy_f = std::clamp(Fy_f, -TYRE_MU * Nf, TYRE_MU * Nf);
+        Fy_r = std::clamp(Fy_r, -TYRE_MU * Nr, TYRE_MU * Nr);
+
+        // Low-speed ramp: smoothly bring lateral forces to zero below 3 m/s.
+        // Avoids the force discontinuity at the 0.5 m/s threshold and prevents
+        // the car spinning out from a near-standstill steer input.
+        float speedRamp = std::min(1.f, (std::abs(vx_) - 0.5f) / 2.5f);
+        Fy_f *= speedRamp;
+        Fy_r *= speedRamp;
     }
+
     state_.slipAngleRad = alpha_f;
 
-    // --- Lateral tyre forces (linear with saturation) ---
-    float sat_f = std::min(1.f, Nf / Nref);
-    float sat_r = std::min(1.f, Nr / Nref);
-    float Fy_f  = -Caf * alpha_f * sat_f;
-    float Fy_r  = -Car * alpha_r * sat_r;
-
-    // --- Equations of motion (body frame) ---
-    float netX  = driveForce - totalBrake - drag + Fy_f * std::sin(steerAngle);
-    float netY  = Fy_f * std::cos(steerAngle) + Fy_r;
-    float Mz    = Fy_f * std::cos(steerAngle) * lf - Fy_r * lr;
+    // --- Equations of motion (body frame, y-right) ---
+    float netX = driveForce - totalBrake - drag + Fy_f * std::sin(steerAngle);
+    float netY = Fy_f * std::cos(steerAngle) + Fy_r;
+    // Mz: right-hand moment about +Y (up); negative = CW = turning right
+    float Mz   = Fy_f * std::cos(steerAngle) * lf - Fy_r * lr;
 
     float ax    = netX / mass + vy_ * yawRate_;
     float ay    = netY / mass - vx_ * yawRate_;
     float alphaZ= Mz  / Iz;
 
-    vx_      += ax       * dt;
-    vy_      += ay       * dt;
-    yawRate_ += alphaZ   * dt;
+    vx_      += ax     * dt;
+    vy_      += ay     * dt;
+    // Note: -= because negative Mz (CW) should INCREASE yawRate_ (right turn)
+    yawRate_ -= alphaZ * dt;
 
-    // Clamp reverse speed (no reverse gear in POC)
+    // Clamp reverse (no reverse gear in POC)
     vx_ = std::max(0.f, vx_);
 
-    // Dampen lateral drift slightly (numerical stability)
+    // Lateral damping for numerical stability
     vy_      *= 0.98f;
     yawRate_ *= 0.995f;
 
@@ -127,9 +170,8 @@ void SemiRealisticVehicle::integrate(const InputFrame& input, float dt)
     state_.speedMs     = vx_;
 
     // --- RPM update ---
-    float wheelRPM   = (vx_ / rw) * (60.f / (2.f * glm::pi<float>()));
-    state_.engineRpm  = std::max(params_.idleRpm,
-        wheelRPM * gearRatio * params_.diffRatio);
+    float wheelRPM  = (vx_ / rw) * (60.f / (2.f * glm::pi<float>()));
+    state_.engineRpm = std::max(params_.idleRpm, wheelRPM * gearRatio * params_.diffRatio);
     autoShift();
 
     // --- Copy input state for observers ---
@@ -138,27 +180,30 @@ void SemiRealisticVehicle::integrate(const InputFrame& input, float dt)
     state_.steer    = input.steer;
     state_.odoMeters += vx_ * dt;
 
+    // Weight front ratio (for body roll visual feedback via camera)
+    float totalN = Nf + Nr;
+    state_.weightFront = (totalN > 0.f) ? Nf / totalN : 0.5f;
+
     updateSegmentTracking();
 }
 
 // ---------------------------------------------------------------------------
-// Segment tracking — walk centreline points to find current segment
+// Segment tracking
 // ---------------------------------------------------------------------------
 void SemiRealisticVehicle::setCenterlinePoints(
     const std::vector<glm::vec3>& points,
     const std::vector<uint32_t>&  segmentStartVertex,
     int vertsPerRow)
 {
-    centerline_          = points;
-    segmentStartVertex_  = segmentStartVertex;
-    vertsPerRow_         = vertsPerRow;
+    centerline_         = points;
+    segmentStartVertex_ = segmentStartVertex;
+    vertsPerRow_        = vertsPerRow;
 }
 
 void SemiRealisticVehicle::updateSegmentTracking()
 {
     if (centerline_.empty()) return;
 
-    // Find the closest centreline point to car position
     float minDist = 1e9f;
     int   bestIdx = 0;
     for (int i = 0; i < (int)centerline_.size(); ++i) {
@@ -171,10 +216,8 @@ void SemiRealisticVehicle::updateSegmentTracking()
         }
     }
 
-    // Map centreline index back to segment index
     int seg = 0;
     for (int s = (int)segmentStartVertex_.size() - 1; s >= 0; --s) {
-        // segmentStartVertex_[s] / vertsPerRow_ gives the first centreline point of segment s
         int firstPoint = segmentStartVertex_[s] / vertsPerRow_;
         if (bestIdx >= firstPoint) {
             seg = s;
@@ -183,5 +226,5 @@ void SemiRealisticVehicle::updateSegmentTracking()
     }
 
     state_.segmentIndex    = seg;
-    state_.segmentProgress = 0.f; // simplified: 0 for now
+    state_.segmentProgress = 0.f;
 }

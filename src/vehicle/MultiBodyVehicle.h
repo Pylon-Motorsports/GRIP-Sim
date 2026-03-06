@@ -1,6 +1,8 @@
 #pragma once
 #include "IVehicleDynamics.h"
 #include "MultiBodyParams.h"
+#include "road/TerrainQuery.h"
+#include "rendering/RoadMesh.h"
 #include <glm/glm.hpp>
 #include <array>
 #include <vector>
@@ -30,18 +32,25 @@ public:
                              const std::vector<uint32_t>&  segmentStartVertex,
                              int verticesPerRow);
 
+    /// Provide terrain data for per-wheel ground height queries.
+    void setTerrainQuery(const TerrainQuery& terrain);
+
+    /// Provide tree collision cylinders (from RoadBuilder tree placement).
+    void setTrees(const std::vector<TreeInstance>& trees);
+
 private:
     // -----------------------------------------------------------------------
     // Internal state
     // -----------------------------------------------------------------------
 
     struct WheelState {
-        float steerAngle { 0.f };   ///< Current steering angle (rad), front wheels only
-        float spinRate   { 0.f };   ///< Wheel angular velocity (rad/s)
-        float normalForce{ 0.f };   ///< Normal force from suspension (N), updated each step
-        float Fx         { 0.f };   ///< Longitudinal tyre force in world (N)
-        float Fy         { 0.f };   ///< Lateral tyre force in world (N)
-        bool  inContact  { true };  ///< Whether wheel is touching the ground
+        float steerAngle  { 0.f };   ///< Current steering angle (rad), front wheels only
+        float spinRate    { 0.f };   ///< Wheel angular velocity (rad/s)
+        float normalForce { 0.f };   ///< Normal force from suspension (N), updated each step
+        float Fx          { 0.f };   ///< Longitudinal tyre force in world (N)
+        float Fy          { 0.f };   ///< Lateral tyre force in world (N)
+        float alphaFiltered { 0.f }; ///< Relaxation-length filtered slip angle (rad)
+        bool  inContact   { true };  ///< Whether wheel is touching the ground
     };
 
     struct SuspState {
@@ -75,6 +84,9 @@ private:
 
     MultiBodyParams params_;
     VehicleState    state_;
+    TerrainQuery    terrain_;
+    float           wheelGroundHeight_[4] {};
+    std::vector<TreeInstance> trees_;
 
     // -----------------------------------------------------------------------
     // Helpers

@@ -1,5 +1,6 @@
 #include "VulkanPipeline.h"
 #include "RoadMesh.h"
+#include "VehicleMesh.h"
 #include "core/Logging.h"
 #include <fstream>
 #include <array>
@@ -31,8 +32,9 @@ VkShaderModule VulkanPipeline::createShaderModule(VkDevice device, const std::ve
 }
 
 bool VulkanPipeline::create(const VulkanContext& ctx,
-                             const std::string& vertSpvPath,
-                             const std::string& fragSpvPath)
+                             const std::string&   vertSpvPath,
+                             const std::string&   fragSpvPath,
+                             const PipelineConfig& config)
 {
     auto vertCode = readSpv(vertSpvPath);
     auto fragCode = readSpv(fragSpvPath);
@@ -51,25 +53,37 @@ bool VulkanPipeline::create(const VulkanContext& ctx,
     stages[1].module = fragMod;
     stages[1].pName  = "main";
 
-    // Vertex binding: one buffer, stride = sizeof(RoadVertex)
+    // Vertex input — omit binding/attributes when pipeline generates its own vertices (e.g. sky)
     VkVertexInputBindingDescription binding{};
     binding.binding   = 0;
-    binding.stride    = sizeof(RoadVertex);
     binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-    // Attribute descriptions matching RoadVertex layout
-    std::array<VkVertexInputAttributeDescription, 4> attrs{};
-    attrs[0] = { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,  offsetof(RoadVertex, position)  };
-    attrs[1] = { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,  offsetof(RoadVertex, normal)    };
-    attrs[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,     offsetof(RoadVertex, uv)        };
-    attrs[3] = { 3, 0, VK_FORMAT_R32_SFLOAT,        offsetof(RoadVertex, surfaceId) };
+    std::vector<VkVertexInputAttributeDescription> attrs;
+    if (config.vertexLayout == VertexLayout::Vehicle) {
+        binding.stride = sizeof(VehicleVertex);
+        attrs = {
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(VehicleVertex, pos)    },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT,    offsetof(VehicleVertex, normal) },
+            { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(VehicleVertex, color)  },
+        };
+    } else {
+        binding.stride = sizeof(RoadVertex);
+        attrs = {
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(RoadVertex, position)  },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(RoadVertex, normal)    },
+            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(RoadVertex, uv)        },
+            { 3, 0, VK_FORMAT_R32_SFLOAT,       offsetof(RoadVertex, surfaceId) },
+        };
+    }
 
     VkPipelineVertexInputStateCreateInfo vertexInput{};
-    vertexInput.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-    vertexInput.vertexBindingDescriptionCount   = 1;
-    vertexInput.pVertexBindingDescriptions      = &binding;
-    vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
-    vertexInput.pVertexAttributeDescriptions    = attrs.data();
+    vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    if (config.hasVertexInput) {
+        vertexInput.vertexBindingDescriptionCount   = 1;
+        vertexInput.pVertexBindingDescriptions      = &binding;
+        vertexInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrs.size());
+        vertexInput.pVertexAttributeDescriptions    = attrs.data();
+    }
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -88,9 +102,12 @@ bool VulkanPipeline::create(const VulkanContext& ctx,
     VkPipelineRasterizationStateCreateInfo rast{};
     rast.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rast.polygonMode = VK_POLYGON_MODE_FILL;
-    rast.cullMode    = VK_CULL_MODE_BACK_BIT;
+    rast.cullMode    = config.cullMode;
     rast.frontFace   = VK_FRONT_FACE_CLOCKWISE;
     rast.lineWidth   = 1.f;
+    rast.depthBiasEnable         = config.depthBiasEnable ? VK_TRUE : VK_FALSE;
+    rast.depthBiasConstantFactor = config.depthBiasConstant;
+    rast.depthBiasSlopeFactor    = config.depthBiasSlope;
 
     VkPipelineMultisampleStateCreateInfo msaa{};
     msaa.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -98,13 +115,22 @@ bool VulkanPipeline::create(const VulkanContext& ctx,
 
     VkPipelineDepthStencilStateCreateInfo depth{};
     depth.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth.depthTestEnable  = VK_TRUE;
-    depth.depthWriteEnable = VK_TRUE;
+    depth.depthTestEnable  = config.depthTest  ? VK_TRUE : VK_FALSE;
+    depth.depthWriteEnable = config.depthWrite ? VK_TRUE : VK_FALSE;
     depth.depthCompareOp   = VK_COMPARE_OP_LESS;
 
     VkPipelineColorBlendAttachmentState blend{};
     blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
                          | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (config.blendEnable) {
+        blend.blendEnable         = VK_TRUE;
+        blend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.colorBlendOp        = VK_BLEND_OP_ADD;
+        blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend.alphaBlendOp        = VK_BLEND_OP_ADD;
+    }
     VkPipelineColorBlendStateCreateInfo blendState{};
     blendState.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     blendState.attachmentCount = 1;
@@ -119,7 +145,7 @@ bool VulkanPipeline::create(const VulkanContext& ctx,
     dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates    = dynamicStates.data();
 
-    // Pipeline layout with push constants
+    // Pipeline layout with push constants (all pipelines share the same range)
     VkPushConstantRange pushRange{};
     pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     pushRange.offset     = 0;
@@ -166,6 +192,6 @@ void VulkanPipeline::destroy(VkDevice device)
 {
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    pipeline = VK_NULL_HANDLE;
+    pipeline       = VK_NULL_HANDLE;
     pipelineLayout = VK_NULL_HANDLE;
 }

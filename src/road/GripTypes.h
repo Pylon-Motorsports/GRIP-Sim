@@ -83,6 +83,7 @@ struct GripSegment {
     int   indexSequence               { 0 };
     float centerLineLengthMeters      { 0.f };
     float horizontalAngleDeltaDegrees { 0.f };  ///< Total yaw change over this segment
+    float verticalAngleDeltaDegrees   { 0.f };  ///< Total pitch change (positive = uphill)
 
     std::vector<SurfaceStrip>    leftSurfaces;
     std::vector<SurfaceStrip>    rightSurfaces;
@@ -94,6 +95,7 @@ struct GripSegment {
     // Derived (populated by RoadBuilder::build())
     glm::vec3 startPosition   { 0.f };
     float     startHeadingRad { 0.f };
+    float     startPitchRad   { 0.f };
 };
 
 } // namespace grip_schema

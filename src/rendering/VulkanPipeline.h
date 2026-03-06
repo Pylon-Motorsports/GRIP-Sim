@@ -2,6 +2,7 @@
 #include "VulkanContext.h"
 #include <glm/glm.hpp>
 #include <string>
+#include <vulkan/vulkan.h>
 
 /// Push constants layout shared between CPU and shaders.
 /// Fits within the Vulkan minimum-spec 128-byte push constant range.
@@ -11,15 +12,32 @@ struct PushConstants {
 };
 static_assert(sizeof(PushConstants) <= 128, "PushConstants exceed min-spec limit");
 
-/// Owns the graphics pipeline and its layout for the road and car meshes.
+/// Selects which vertex struct the pipeline reads from the vertex buffer.
+enum class VertexLayout { Road, Vehicle };
+
+/// Configures optional pipeline features — defaults produce the road/mesh pipeline.
+struct PipelineConfig {
+    bool            hasVertexInput { true  };   ///< false = procedural vertex (e.g. sky triangle)
+    bool            depthTest      { true  };   ///< false = draw on top regardless of depth
+    bool            depthWrite     { true  };   ///< false = don't write depth (e.g. sky pass)
+    bool            blendEnable    { false };   ///< true  = alpha blending (for translucent geometry)
+    VkCullModeFlags cullMode       { VK_CULL_MODE_NONE };
+    VertexLayout    vertexLayout   { VertexLayout::Road };
+    bool            depthBiasEnable { false };  ///< Polygon offset to reduce Z-fighting
+    float           depthBiasConstant { 0.f };  ///< Constant depth bias (in depth buffer units)
+    float           depthBiasSlope    { 0.f };  ///< Slope-scaled depth bias
+};
+
+/// Owns a Vulkan graphics pipeline and its layout.
 struct VulkanPipeline {
     VkPipeline       pipeline       { VK_NULL_HANDLE };
     VkPipelineLayout pipelineLayout { VK_NULL_HANDLE };
 
-    /// Create pipeline for road/car rendering.
+    /// Create pipeline. Uses default PipelineConfig for road/mesh geometry.
     bool create(const VulkanContext& ctx,
-                const std::string& vertSpvPath,
-                const std::string& fragSpvPath);
+                const std::string&  vertSpvPath,
+                const std::string&  fragSpvPath,
+                const PipelineConfig& config = {});
 
     void destroy(VkDevice device);
 

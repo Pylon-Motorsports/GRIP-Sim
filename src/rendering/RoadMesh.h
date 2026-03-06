@@ -14,6 +14,13 @@ struct RoadVertex {
 
 static_assert(sizeof(RoadVertex) == 36, "RoadVertex must be 36 bytes");
 
+/// A single tree placed along the road (generated from RoadsideLiner).
+struct TreeInstance {
+    glm::vec3 position;     ///< Base of trunk (world space, on ground)
+    float     trunkRadius;  ///< Collision cylinder radius (m)
+    float     height;       ///< Total visual height (m)
+};
+
 /// CPU-side road geometry ready for upload to the GPU.
 struct RoadMesh {
     std::vector<RoadVertex> vertices;
@@ -26,6 +33,13 @@ struct RoadMesh {
     /// World-space centerline spine points (one per tessellation step).
     /// Used by Camera, IPaceNoteGenerator, and segment tracking.
     std::vector<glm::vec3>  centerlinePoints;
+
+    /// Yaw (rad) at each centerline point (parallel to centerlinePoints).
+    /// Used by TerrainQuery for ground height lookups.
+    std::vector<float>      centerlineHeadings;
+
+    /// Tree instances placed along the road (from RoadsideLiner with Trees type).
+    std::vector<TreeInstance> trees;
 
     /// Set to true when vertices/indices have changed and need re-uploading.
     bool dirty { true };
