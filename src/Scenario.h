@@ -104,5 +104,22 @@ inline std::vector<Scenario> createScenarios()
         scenarios.push_back({"Hills", std::move(bumps)});
     }
 
+    // 5: Alternating left/right hills — spaced apart, wheels hit but body doesn't
+    // Body is ±0.30m from center, wheels at ±0.75m. Hills cover one side only.
+    {
+        std::vector<Bump> bumps;
+        for (int i = 0; i < 12; ++i) {
+            bool leftSide = (i % 2 == 0);
+            bumps.push_back({
+                10.f + i * 22.f, // every 22m, more spacing
+                6.0f,            // 12m wavelength
+                0.20f + 0.10f * std::sin(i * 1.7f),  // vary 10-30cm
+                leftSide ? -2.5f : 0.4f,
+                leftSide ? -0.4f : 2.5f,
+            });
+        }
+        scenarios.push_back({"Side Hills", std::move(bumps)});
+    }
+
     return scenarios;
 }

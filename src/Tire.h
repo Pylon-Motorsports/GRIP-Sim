@@ -39,7 +39,8 @@ public:
     // Stiffness per unit contact patch area — controls how quickly grip
     // builds with slip before saturation. Larger patch = higher stiffness
     // = more linear grip range before sliding.
-    float slipStiffnessPerArea = 3.0e6f;  // N / m² / unit_slip
+    float slipStiffnessPerArea        = 3.0e6f;  // N / m² / unit_slip (longitudinal)
+    float lateralSlipStiffnessPerArea = 1.5e6f;  // N / m² / rad (lateral, lower → later saturation)
 
     // --- Per-step state (read by external code for HUD, etc.) ---
     float deflection         = 0.f;  // current d (m)
@@ -110,6 +111,43 @@ public:
         }
 
         return (slipRatio >= 0.f) ? magnitude : -magnitude;
+    }
+
+    // Lateral force from slip angle using brush model.
+    // slipAngle in radians; positive = velocity to right of heading.
+    // Returns force that opposes the slip (negative when slipAngle positive).
+    float computeLateralForce(float slipAngle, float Fn) const
+    {
+        if (Fn <= 0.f || contactPatchArea <= 0.f) return 0.f;
+
+        float Cy = lateralSlipStiffnessPerArea * contactPatchArea;
+        float maxF = mu * Fn;
+        float k = Cy / (3.f * maxF);
+        float absKs = std::abs(k * slipAngle);
+
+        float magnitude;
+        if (absKs < 1.f) {
+            magnitude = maxF * (3.f * absKs - 3.f * absKs * absKs
+                                + absKs * absKs * absKs);
+        } else {
+            magnitude = maxF;
+        }
+
+        // Opposes slip: positive slipAngle → negative force
+        return (slipAngle >= 0.f) ? -magnitude : magnitude;
+    }
+
+    // Clamp combined longitudinal + lateral forces to friction circle.
+    // Ensures total tire force magnitude doesn't exceed mu * Fn.
+    void frictionCircleClamp(float& longForce, float& latForce, float Fn) const
+    {
+        float maxF = mu * Fn;
+        float combined = std::sqrt(longForce * longForce + latForce * latForce);
+        if (combined > maxF && combined > 0.f) {
+            float scale = maxF / combined;
+            longForce *= scale;
+            latForce  *= scale;
+        }
     }
 
     // Rolling resistance: opposes motion, proportional to normal load.

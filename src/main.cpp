@@ -93,6 +93,7 @@ int main(int /*argc*/, char** /*argv*/)
                 if (e.key.keysym.sym == SDLK_2) switchScenario(1);
                 if (e.key.keysym.sym == SDLK_3) switchScenario(2);
                 if (e.key.keysym.sym == SDLK_4) switchScenario(3);
+                if (e.key.keysym.sym == SDLK_5) switchScenario(4);
             }
 
             // Mouse click on scenario buttons
@@ -120,14 +121,18 @@ int main(int /*argc*/, char** /*argv*/)
         InputState input{};
 
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
-        if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])   input.throttle = 1.f;
-        if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN]) input.brake    = 1.f;
+        if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    input.throttle = 1.f;
+        if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  input.brake    = 1.f;
+        if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  input.steer    = -1.f;
+        if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) input.steer    =  1.f;
 
         if (controller) {
             float rt = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.f;
             float lt = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT)  / 32767.f;
+            float lx = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_LEFTX)        / 32767.f;
             if (rt > 0.05f) input.throttle = rt;
             if (lt > 0.05f) input.brake    = lt;
+            if (std::abs(lx) > 0.05f) input.steer = lx;
         }
 
         // Fixed-timestep physics

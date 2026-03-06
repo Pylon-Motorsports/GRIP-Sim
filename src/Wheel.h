@@ -16,8 +16,9 @@
 //   2. Normal force from tire radial spring-damper
 //   3. Contact patch area from deflection geometry
 //   4. Slip ratio from wheel speed vs ground speed
-//   5. Longitudinal force from brush model + rolling resistance
-//   6. Integrate wheel angular velocity (drive + brake + bearing - tire reaction)
+//   5. Slip angle from lateral velocity vs forward velocity
+//   6. Longitudinal + lateral forces from brush model, clamped to friction circle
+//   7. Integrate wheel angular velocity (drive + brake + bearing - tire reaction)
 
 class Wheel {
 public:
@@ -36,8 +37,9 @@ public:
 
     struct Forces {
         float normalForce;       // vertical reaction (N), upward
-        float longitudinalForce; // along forward dir (N), from brush slip model
-        float rollingResistance; // along forward dir (N), direct body force
+        float longitudinalForce; // along wheel heading (N), from brush slip model
+        float lateralForce;      // perpendicular to wheel heading (N), from brush slip model
+        float rollingResistance; // along wheel heading (N), direct body force
     };
 
     // Compute all tire forces and integrate wheel rotation.
@@ -45,13 +47,14 @@ public:
     //   hubY:         world Y of wheel center (from body position + offset)
     //   hubVelY:      vertical velocity of hub (m/s, positive = up)
     //   groundY:      terrain height below this wheel
-    //   forwardSpeed: vehicle forward speed at this corner (m/s)
+    //   vLong:        velocity along wheel heading (m/s)
+    //   vLat:         velocity perpendicular to wheel heading (m/s, positive = right)
     //   driveTorque:  from engine via drivetrain (Nm), 0 for non-driven wheels
     //   brakePedal:   [0, 1]
     //   dt:           timestep (s)
     Forces computeForces(float hubY, float hubVelY, float groundY,
-                         float forwardSpeed, float driveTorque,
-                         float brakePedal, float dt)
+                         float vLong, float vLat,
+                         float driveTorque, float brakePedal, float dt)
     {
         Forces f{};
 
@@ -60,7 +63,6 @@ public:
         tire.deflection = d;
 
         // 2. Deflection rate: dDot > 0 means compressing.
-        // d = (groundY + R) - hubY, so dDot = -hubVelY (flat ground approx)
         float dDot = -hubVelY;
 
         // 3. Normal force
@@ -84,40 +86,41 @@ public:
 
         // 5. Slip ratio
         float wheelSpeed = angularVel * tire.radius;
-        constexpr float slipEps = 0.5f;  // regularization for low speed
-        float denom = std::max(std::abs(forwardSpeed), slipEps);
-        float slipRatio = (wheelSpeed - forwardSpeed) / denom;
+        constexpr float slipEps = 0.5f;
+        float denom = std::max(std::abs(vLong), slipEps);
+        float slipRatio = (wheelSpeed - vLong) / denom;
 
-        // 6. Longitudinal force from brush model
+        // 6. Slip angle
+        float slipAngle = std::atan2(vLat, std::max(std::abs(vLong), slipEps));
+
+        // 7. Forces from brush model
         float Fx = tire.computeLongitudinalForce(slipRatio, Fn);
+        float Fy = tire.computeLateralForce(slipAngle, Fn);
+
+        // 8. Friction circle clamp
+        tire.frictionCircleClamp(Fx, Fy, Fn);
+
         f.longitudinalForce = Fx;
+        f.lateralForce = Fy;
 
-        // 7. Rolling resistance — applied directly to vehicle body, NOT through
-        // the wheel/slip model. Rolling resistance is caused by asymmetric contact
-        // patch deformation, not by a torque at the hub.
-        f.rollingResistance = tire.computeRollingResistance(Fn, forwardSpeed);
+        // 9. Rolling resistance — applied directly to vehicle body
+        f.rollingResistance = tire.computeRollingResistance(Fn, vLong);
 
-        // 8. Integrate wheel angular velocity
-        //    Torques on wheel: drive + bearing - tire reaction, then brake friction
+        // 10. Integrate wheel angular velocity
         float regSign = angularVel / (std::abs(angularVel) + 0.2f);
         float bearingTorque = -bearingFrictionNm * regSign;
         float tireReaction  = -Fx * tire.radius;
 
         float unbrakeTorque = driveTorque + bearingTorque + tireReaction;
 
-        // Brake is a friction device: opposes rotation up to its torque capacity.
-        // When the wheel is nearly stopped and the brake can absorb all remaining
-        // torque, the wheel locks — no oscillation, no velocity-dependent ramp.
         float brakeCap = maxBrakeTorqueNm * brakePedal;
         float netTorque;
         if (brakeCap > 0.f && std::abs(unbrakeTorque) <= brakeCap
             && std::abs(angularVel) < 1.f)
         {
-            // Brake holds: absorbs all torque, wheel is locked
             netTorque = 0.f;
             angularVel = 0.f;
         } else {
-            // Brake is sliding or not applied: opposes rotation
             float brakeTorque = -brakeCap * regSign;
             netTorque = unbrakeTorque + brakeTorque;
         }

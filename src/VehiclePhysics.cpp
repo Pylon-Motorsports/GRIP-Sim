@@ -40,6 +40,7 @@ void VehiclePhysics::init()
     float l2 = (2.f * Vehicle::BODY_HALF_L) * (2.f * Vehicle::BODY_HALF_L);
     pitchInertia_ = m * (h2 + l2) / 12.f;  // rotation about X axis
     rollInertia_  = m * (h2 + w2) / 12.f;   // rotation about Z axis
+    yawInertia_   = m * (w2 + l2) / 12.f;   // rotation about Y axis
 
     // Start resting on ground
     pos_.y = Vehicle::BODY_Y;
@@ -73,6 +74,8 @@ void VehiclePhysics::reset()
     roll_ = 0.f;
     pitchRate_ = 0.f;
     rollRate_ = 0.f;
+    yawRate_ = 0.f;
+    front_.steerAngle = 0.f;
     engine_.rpm = engine_.idleRpm;
     for (auto& w : wheels_) {
         w.angularVel = 0.f;
@@ -83,9 +86,19 @@ void VehiclePhysics::reset()
 
 void VehiclePhysics::update(float dt, const InputState& input)
 {
-    // --- Forward speed (projection of velocity onto heading) ---
+    // --- Body velocity in body-local frame ---
     glm::vec3 fwd = forwardDir();
+    glm::vec3 rht = rightDir();
     forwardSpeed_ = glm::dot(vel_, fwd);
+    float lateralSpeed = glm::dot(vel_, rht);
+
+    // --- Steering ---
+    float steerInput = applyDeadzone(input.steer, STEER_DEADZONE);
+    // Speed-sensitive: reduce max steer at higher speeds
+    float speedFactor = 1.f / (1.f + std::abs(forwardSpeed_) / 30.f);
+    float steerAngle = steerInput * MAX_STEER_ANGLE * speedFactor;
+    front_.steerAngle = steerAngle;
+    rear_.steerAngle = 0.f;
 
     // --- Engine (RWD: drive goes to rear subframe) ---
     float rearAngVel = (wheels_[2].angularVel + wheels_[3].angularVel) * 0.5f;
@@ -93,9 +106,8 @@ void VehiclePhysics::update(float dt, const InputState& input)
     float perWheelDrive = totalDriveTorque * 0.5f;
 
     // --- Per-wheel tire forces ---
-    // Compute forces for all 4 wheels, then route through subframes
     Wheel::Forces wf[4];
-    float longF[4];
+    float bodyFx[4], bodyFz[4];  // body-frame horizontal forces per wheel
     glm::vec3 wheelNormal[4];
 
     for (int i = 0; i < 4; ++i) {
@@ -103,10 +115,26 @@ void VehiclePhysics::update(float dt, const InputState& input)
         float gy = wheelGroundY(i);
         float drive = (i >= 2) ? perWheelDrive : 0.f;
 
-        wf[i] = wheels_[i].computeForces(
-            wpos.y, vel_.y, gy, forwardSpeed_, drive, input.brake, dt);
+        // Which subframe owns this wheel?
+        Subframe& sf = (i < 2) ? front_ : rear_;
 
-        longF[i] = wf[i].longitudinalForce + wf[i].rollingResistance;
+        // Corner velocity in body frame (CG vel + yaw contribution)
+        glm::vec3 r = wheels_[i].localOffset;
+        float cornerVx = lateralSpeed  + yawRate_ * r.z;
+        float cornerVz = forwardSpeed_ - yawRate_ * r.x;
+
+        // Decompose into wheel-local via subframe (applies steering rotation)
+        float vLong, vLat;
+        sf.decomposeVelocity(cornerVx, cornerVz, vLong, vLat);
+
+        // Compute tire forces in wheel-local frame
+        wf[i] = wheels_[i].computeForces(
+            wpos.y, vel_.y, gy, vLong, vLat, drive, input.brake, dt);
+
+        // Transform wheel-frame forces back to body frame
+        float fLong = wf[i].longitudinalForce + wf[i].rollingResistance;
+        float fLat = wf[i].lateralForce;
+        sf.transformForces(fLong, fLat, bodyFx[i], bodyFz[i]);
 
         // Surface normal at contact point (for slope forces)
         if (bumps_ && !bumps_->empty())
@@ -115,41 +143,59 @@ void VehiclePhysics::update(float dt, const InputState& input)
             wheelNormal[i] = {0.f, 1.f, 0.f};
     }
 
-    // --- Route through subframes ---
+    // --- Route vertical forces through subframes ---
     glm::vec3 bodyForce{0.f, -bodyMassKg_ * GRAVITY, 0.f};
     glm::vec3 bodyTorque{0.f};
 
-    // Normal force applied along surface normal (not purely vertical).
-    // On slopes this creates a lateral component that pushes the car downhill.
-    // Front subframe
+    // Front subframe: normal force along surface normal
     {
         glm::vec3 nf0 = wf[0].normalForce * wheelNormal[0];
         glm::vec3 nf1 = wf[1].normalForce * wheelNormal[1];
         auto af = front_.transmitVertical(nf0, nf1);
         bodyForce  += af.bodyForce;
         bodyTorque += af.bodyTorque;
-        bodyTorque.x += front_.pitchTorqueFromLongitudinal(longF[0], longF[1]);
     }
 
-    // Rear subframe
+    // Rear subframe: normal force along surface normal
     {
         glm::vec3 nf2 = wf[2].normalForce * wheelNormal[2];
         glm::vec3 nf3 = wf[3].normalForce * wheelNormal[3];
         auto af = rear_.transmitVertical(nf2, nf3);
         bodyForce  += af.bodyForce;
         bodyTorque += af.bodyTorque;
-        bodyTorque.x += rear_.pitchTorqueFromLongitudinal(longF[2], longF[3]);
     }
 
-    float totalLongForce = front_.transmitLongitudinal(longF[0], longF[1])
-                         + rear_.transmitLongitudinal(longF[2], longF[3]);
-    bodyForce += fwd * totalLongForce;
+    // --- Horizontal forces: accumulate body force, pitch/roll/yaw torques ---
+    float totalBodyFx = 0.f, totalBodyFz = 0.f;
+    float yawTorque = 0.f;
+
+    for (int i = 0; i < 4; ++i) {
+        totalBodyFx += bodyFx[i];
+        totalBodyFz += bodyFz[i];
+    }
+
+    // Pitch torque from forward forces at mount points
+    bodyTorque.x += front_.pitchTorqueFromForward(bodyFz[0], bodyFz[1]);
+    bodyTorque.x += rear_.pitchTorqueFromForward(bodyFz[2], bodyFz[3]);
+
+    // Roll torque from lateral forces at mount points
+    bodyTorque.z += front_.rollTorqueFromLateral(bodyFx[0], bodyFx[1]);
+    bodyTorque.z += rear_.rollTorqueFromLateral(bodyFx[2], bodyFx[3]);
+
+    // Yaw torque from horizontal forces at wheel positions
+    yawTorque += front_.yawTorqueFromHorizontal(bodyFx[0], bodyFz[0], bodyFx[1], bodyFz[1]);
+    yawTorque += rear_.yawTorqueFromHorizontal(bodyFx[2], bodyFz[2], bodyFx[3], bodyFz[3]);
+
+    // Apply horizontal forces in world frame
+    bodyForce += fwd * totalBodyFz + rht * totalBodyFx;
 
     // --- Angular damping (prevents oscillation) ---
     constexpr float PITCH_DAMP = 800.f;  // N·m·s/rad
     constexpr float ROLL_DAMP  = 600.f;
+    constexpr float YAW_DAMP   = 50.f;   // light — tires provide most yaw damping naturally
     bodyTorque.x -= PITCH_DAMP * pitchRate_;
     bodyTorque.z -= ROLL_DAMP  * rollRate_;
+    yawTorque    -= YAW_DAMP   * yawRate_;
 
     // --- Integrate linear ---
     float mass = totalMass();
@@ -157,7 +203,7 @@ void VehiclePhysics::update(float dt, const InputState& input)
     vel_ += accel * dt;
     pos_ += vel_ * dt;
 
-    // --- Integrate angular ---
+    // --- Integrate pitch and roll ---
     float pitchAccel = bodyTorque.x / pitchInertia_;
     float rollAccel  = bodyTorque.z / rollInertia_;
     pitchRate_ += pitchAccel * dt;
@@ -170,8 +216,13 @@ void VehiclePhysics::update(float dt, const InputState& input)
     pitch_ = std::clamp(pitch_, -MAX_ANGLE, MAX_ANGLE);
     roll_  = std::clamp(roll_,  -MAX_ANGLE, MAX_ANGLE);
 
+    // --- Integrate yaw ---
+    float yawAccel = yawTorque / yawInertia_;
+    yawRate_ += yawAccel * dt;
+    heading_ += yawRate_ * dt;
+
     // Update forward speed after integration
-    forwardSpeed_ = glm::dot(vel_, fwd);
+    forwardSpeed_ = glm::dot(vel_, forwardDir());
 }
 
 void VehiclePhysics::fillVehicle(Vehicle& veh) const
@@ -227,9 +278,21 @@ glm::vec3 VehiclePhysics::forwardDir() const
     return {std::sin(heading_), 0.f, std::cos(heading_)};
 }
 
+glm::vec3 VehiclePhysics::rightDir() const
+{
+    return {std::cos(heading_), 0.f, -std::sin(heading_)};
+}
+
 float VehiclePhysics::totalMass() const
 {
     float m = bodyMassKg_;
     for (int i = 0; i < 4; ++i) m += wheels_[i].massKg;
     return m;
+}
+
+float VehiclePhysics::applyDeadzone(float value, float deadzone)
+{
+    if (std::abs(value) < deadzone) return 0.f;
+    float sign = value > 0.f ? 1.f : -1.f;
+    return sign * (std::abs(value) - deadzone) / (1.f - deadzone);
 }

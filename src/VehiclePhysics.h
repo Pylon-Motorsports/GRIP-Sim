@@ -26,6 +26,7 @@ public:
     float getForwardSpeed()   const { return forwardSpeed_; }
     float getEngineRpm()      const { return engine_.rpm; }
     float getEngineRpmLimit() const { return engine_.rpmLimit; }
+    float getHeading()        const { return heading_; }
 
     // Speedometer: average speed from front (non-driven) wheels
     float getFrontWheelSpeed() const {
@@ -42,15 +43,21 @@ private:
     float     heading_ = 0.f;
     float     forwardSpeed_ = 0.f;
 
-    // Body angular state (pitch and roll)
+    // Body angular state (pitch, roll, yaw)
     float pitch_     = 0.f;   // radians, positive = nose up
     float roll_      = 0.f;   // radians, positive = right side down
     float pitchRate_ = 0.f;   // rad/s
     float rollRate_  = 0.f;   // rad/s
+    float yawRate_   = 0.f;   // rad/s, positive = turning right
 
     // Moments of inertia (approximate box: I = m*(a^2+b^2)/12)
     float pitchInertia_ = 0.f;  // computed in init
     float rollInertia_  = 0.f;
+    float yawInertia_   = 0.f;
+
+    // Steering
+    static constexpr float MAX_STEER_ANGLE = 0.61f;   // ~35 degrees
+    static constexpr float STEER_DEADZONE  = 0.05f;
 
     // Drivetrain
     Engine     engine_;
@@ -65,5 +72,8 @@ private:
     glm::vec3 mountWorldPos(int i) const;
     glm::vec3 rotateByBody(const glm::vec3& v) const;
     glm::vec3 forwardDir() const;
+    glm::vec3 rightDir() const;
     float     totalMass() const;
+
+    static float applyDeadzone(float value, float deadzone);
 };

@@ -1,6 +1,7 @@
 #pragma once
 #include "Suspension.h"
 #include "Wheel.h"
+#include <cmath>
 
 // Subframe: intermediate structure between left/right suspension and body.
 //
@@ -8,7 +9,7 @@
 // suspensions. Forces currently pass through 1:1, but the subframe
 // provides the natural attachment point for:
 //   - Sway bars (couple left/right vertical forces)
-//   - Steering rack (front subframe)
+//   - Steering rack (front subframe — steerAngle)
 //   - Differential (rear subframe, or front for AWD)
 //
 // The subframe does NOT add a new dynamic degree of freedom — it's
@@ -20,11 +21,11 @@ struct Subframe {
     Suspension suspension[2];
     Wheel*     wheel[2] = {nullptr, nullptr};  // non-owning pointers, set in init
 
+    // Steering angle for this axle (radians, positive = right).
+    // Set by VehiclePhysics each frame. Rear subframe stays at 0.
+    float steerAngle = 0.f;
+
     // Transmit vertical forces from both corners to the body.
-    // Currently 1:1 pass-through. Sway bar would redistribute here:
-    //   delta = (leftDeflection - rightDeflection) * swayBarRate
-    //   leftForce  -= delta
-    //   rightForce += delta
     struct AxleForces {
         glm::vec3 bodyForce{0.f};
         glm::vec3 bodyTorque{0.f};
@@ -42,17 +43,47 @@ struct Subframe {
         return af;
     }
 
-    // Transmit longitudinal forces (drive/brake) from both corners.
-    // Differential would split drive torque here.
-    float transmitLongitudinal(float leftLongF, float rightLongF) const
+    // Decompose body-frame velocity at a corner into wheel-local long/lat.
+    // bodyVx = rightward velocity, bodyVz = forward velocity (both in body frame).
+    void decomposeVelocity(float bodyVx, float bodyVz,
+                           float& vLong, float& vLat) const
     {
-        return leftLongF + rightLongF;
+        float cs = std::cos(steerAngle), ss = std::sin(steerAngle);
+        vLong = bodyVz * cs + bodyVx * ss;
+        vLat  = bodyVx * cs - bodyVz * ss;
     }
 
-    // Pitch torque from longitudinal forces at mount points.
-    float pitchTorqueFromLongitudinal(float leftLongF, float rightLongF) const
+    // Transform wheel-local forces (longitudinal, lateral) to body frame.
+    void transformForces(float fLong, float fLat,
+                         float& bodyFx, float& bodyFz) const
     {
-        return suspension[0].mountPoint.y * leftLongF
-             + suspension[1].mountPoint.y * rightLongF;
+        float cs = std::cos(steerAngle), ss = std::sin(steerAngle);
+        bodyFx = fLong * ss + fLat * cs;
+        bodyFz = fLong * cs - fLat * ss;
+    }
+
+    // Pitch torque from forward forces at mount points.
+    float pitchTorqueFromForward(float bodyFz0, float bodyFz1) const
+    {
+        return suspension[0].mountPoint.y * bodyFz0
+             + suspension[1].mountPoint.y * bodyFz1;
+    }
+
+    // Roll torque from lateral forces at mount points.
+    float rollTorqueFromLateral(float bodyFx0, float bodyFx1) const
+    {
+        return -(suspension[0].mountPoint.y * bodyFx0
+               + suspension[1].mountPoint.y * bodyFx1);
+    }
+
+    // Yaw torque from horizontal forces at wheel positions.
+    // tau_y = rz * Fx - rx * Fz for each corner.
+    float yawTorqueFromHorizontal(float bodyFx0, float bodyFz0,
+                                  float bodyFx1, float bodyFz1) const
+    {
+        float rz0 = wheel[0]->localOffset.z, rx0 = wheel[0]->localOffset.x;
+        float rz1 = wheel[1]->localOffset.z, rx1 = wheel[1]->localOffset.x;
+        return (rz0 * bodyFx0 - rx0 * bodyFz0)
+             + (rz1 * bodyFx1 - rx1 * bodyFz1);
     }
 };

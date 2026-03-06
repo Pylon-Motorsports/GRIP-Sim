@@ -424,6 +424,130 @@ static void testThrottleOvercomesFriction()
 }
 
 // ============================================================================
+// Tire lateral force tests
+// ============================================================================
+
+static void testTireLateralBrushModel()
+{
+    Tire t;
+    t.mu = 1.0f;
+    t.lateralSlipStiffnessPerArea = 1.5e6f;
+    t.width = 0.20f;
+    t.radius = 0.30f;
+
+    t.updateContactPatch(0.01f);
+    float Fn = 2000.f;
+
+    // Positive slip angle (velocity to right) → negative force (pushes left)
+    float F1 = t.computeLateralForce(0.05f, Fn);
+    CHECK(F1 < 0.f, "positive slip angle → negative lateral force");
+
+    // Negative slip angle → positive force
+    float F2 = t.computeLateralForce(-0.05f, Fn);
+    CHECK(F2 > 0.f, "negative slip angle → positive lateral force");
+
+    // Larger slip angle → larger magnitude
+    float F3 = t.computeLateralForce(0.10f, Fn);
+    CHECK(std::abs(F3) > std::abs(F1), "more slip angle = more force");
+
+    // Saturates at mu * Fn
+    float Fsat = t.computeLateralForce(1.0f, Fn);
+    CHECK(APPROX(std::abs(Fsat), t.mu * Fn, 1.f), "lateral saturates at mu*Fn");
+
+    // No contact = no force
+    CHECK(t.computeLateralForce(0.1f, 0.f) == 0.f, "no lateral force without load");
+}
+
+static void testFrictionCircle()
+{
+    Tire t;
+    t.mu = 1.0f;
+    float Fn = 1000.f;
+
+    // Forces within circle: no change
+    float fx = 500.f, fy = 500.f;
+    t.frictionCircleClamp(fx, fy, Fn);
+    CHECK(APPROX(fx, 500.f, 0.1f), "friction circle: within → unchanged");
+
+    // Forces exceeding circle: scaled down
+    fx = 800.f; fy = 800.f;
+    t.frictionCircleClamp(fx, fy, Fn);
+    float combined = std::sqrt(fx * fx + fy * fy);
+    CHECK(APPROX(combined, 1000.f, 1.f), "friction circle: clamped to mu*Fn");
+    CHECK(APPROX(fx, fy, 0.1f), "friction circle: ratio preserved");
+}
+
+// ============================================================================
+// Steering tests
+// ============================================================================
+
+static void testVehicleTurnsRight()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    // Build up some speed first
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
+    float headingBefore = phys.getHeading();
+
+    // Steer right while maintaining speed
+    InputState steerRight{}; steerRight.throttle = 0.5f; steerRight.steer = 1.f;
+    simulate(phys, steerRight, 2.f);
+
+    float headingAfter = phys.getHeading();
+    CHECK(headingAfter > headingBefore + 0.1f,
+          "vehicle turns right with positive steer");
+}
+
+static void testVehicleTurnsLeft()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
+    float headingBefore = phys.getHeading();
+
+    InputState steerLeft{}; steerLeft.throttle = 0.5f; steerLeft.steer = -1.f;
+    simulate(phys, steerLeft, 2.f);
+
+    float headingAfter = phys.getHeading();
+    CHECK(headingAfter < headingBefore - 0.1f,
+          "vehicle turns left with negative steer");
+}
+
+static void testStraightWithNoSteer()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 5.f);
+
+    // With zero steer, heading should stay very close to 0
+    CHECK(std::abs(phys.getHeading()) < 0.01f,
+          "vehicle drives straight with no steering");
+}
+
+static void testDeadzoneInput()
+{
+    // Small steer inputs within deadzone should not turn the car
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
+
+    // Apply tiny steer (within 5% deadzone)
+    InputState tinySteer{}; tinySteer.throttle = 0.5f; tinySteer.steer = 0.03f;
+    simulate(phys, tinySteer, 2.f);
+
+    CHECK(std::abs(phys.getHeading()) < 0.01f,
+          "deadzone prevents turning from tiny steer input");
+}
+
+// ============================================================================
 
 int main()
 {
@@ -439,6 +563,8 @@ int main()
     testTireNormalForce();
     testTireContactPatch();
     testTireBrushModel();
+    testTireLateralBrushModel();
+    testFrictionCircle();
 
     testVehicleAccelerates();
     testVehicleBrakes();
@@ -452,6 +578,11 @@ int main()
     testFrictionHoldsAfterBraking();
     testNoCreepAtStartup();
     testThrottleOvercomesFriction();
+
+    testVehicleTurnsRight();
+    testVehicleTurnsLeft();
+    testStraightWithNoSteer();
+    testDeadzoneInput();
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
