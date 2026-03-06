@@ -4,6 +4,7 @@
 struct Vehicle {
     glm::vec3 position { 0.f, 0.f, 0.f };
     float     heading  { 0.f };            // radians, 0 = +Z
+    glm::vec3 wheelPos[4]{};               // world positions of wheel centers
 
     // Body (box)
     static constexpr float BODY_HALF_W = 0.30f;   // 0.60 m wide

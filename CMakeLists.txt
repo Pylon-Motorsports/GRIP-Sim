@@ -53,6 +53,7 @@ set(SOURCES
     src/main.cpp
     src/VulkanContext.cpp
     src/Renderer.cpp
+    src/VehiclePhysics.cpp
 )
 
 add_executable(GRIP-Sim ${SOURCES})

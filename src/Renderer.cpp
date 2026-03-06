@@ -290,19 +290,14 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
     push(glm::mat4(1.f));
     drawSlice(ground_);
 
-    // Body
-    push(vehicleT * glm::translate(glm::mat4(1.f), {0.f, Vehicle::BODY_Y, 0.f}));
+    // Body (position is the CG, already in veh.position)
+    push(glm::translate(glm::mat4(1.f), veh.position)
+       * glm::rotate(glm::mat4(1.f), veh.heading, glm::vec3{0,1,0}));
     drawSlice(body_);
 
-    // 4 wheels (FL, FR, RL, RR)
-    glm::vec3 wheelOffsets[4] = {
-        {-Vehicle::HALF_TRACK, Vehicle::WHEEL_Y,  Vehicle::FRONT_AXLE},
-        { Vehicle::HALF_TRACK, Vehicle::WHEEL_Y,  Vehicle::FRONT_AXLE},
-        {-Vehicle::HALF_TRACK, Vehicle::WHEEL_Y, -Vehicle::REAR_AXLE},
-        { Vehicle::HALF_TRACK, Vehicle::WHEEL_Y, -Vehicle::REAR_AXLE},
-    };
-    for (auto& wo : wheelOffsets) {
-        push(vehicleT * glm::translate(glm::mat4(1.f), wo));
+    // 4 wheels (world positions from physics)
+    for (int i = 0; i < 4; ++i) {
+        push(glm::translate(glm::mat4(1.f), veh.wheelPos[i]));
         drawSlice(wheel_);
     }
 }
@@ -323,15 +318,22 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
     glm::vec3 fwd   { std::sin(h), 0.f, std::cos(h) };
     glm::vec3 right { std::cos(h), 0.f, -std::sin(h) };
 
-    // Vulkan Y-flip wrappers
-    auto vkOrtho = [](float l, float r, float b, float t, float n, float f) {
+    // Vulkan projection wrappers: Y-flip + remap depth from [-1,1] to [0,1]
+    auto fixDepth = [](glm::mat4& p) {
+        // Maps clip Z from [-1,1] (OpenGL) to [0,1] (Vulkan)
+        for (int col = 0; col < 4; ++col)
+            p[col][2] = 0.5f * p[col][2] + 0.5f * p[col][3];
+    };
+    auto vkOrtho = [&](float l, float r, float b, float t, float n, float f) {
         glm::mat4 p = glm::ortho(l, r, b, t, n, f);
         p[1][1] *= -1.f;
+        fixDepth(p);
         return p;
     };
-    auto vkPersp = [](float fovRad, float aspect, float n, float f) {
+    auto vkPersp = [&](float fovRad, float aspect, float n, float f) {
         glm::mat4 p = glm::perspective(fovRad, aspect, n, f);
         p[1][1] *= -1.f;
+        fixDepth(p);
         return p;
     };
 
