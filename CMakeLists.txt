@@ -88,3 +88,14 @@ if(WIN32)
         COMMENT "Copying SDL2 DLL to output directory"
     )
 endif()
+
+# ---------------------------------------------------------------------------
+# Tests (no Vulkan/SDL dependency — pure physics)
+# ---------------------------------------------------------------------------
+
+add_executable(VehicleTest
+    tests/vehicle_test.cpp
+    src/VehiclePhysics.cpp
+)
+target_include_directories(VehicleTest PRIVATE src)
+target_link_libraries(VehicleTest PRIVATE glm::glm)
