@@ -618,44 +618,33 @@ void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudDat
         }
     }
 
-    // --- Speedometer (bottom-right area) ---
+    // --- Speedometer (right side of banner strip) ---
     {
-        float panelX = fw - 200.f;
-        float panelY = fh - 70.f;
-
-        // "KM/H" label
-        buildText("KM/H", panelX + 110.f, panelY + 4.f, 2.f,
-                  {0.8f, 0.8f, 0.8f, 1.f}, hudV, hudI);
-
-        // Speed number (large)
         char speedStr[16];
         int spd = (int)(std::abs(hud.speedKmh) + 0.5f);
         std::snprintf(speedStr, sizeof(speedStr), "%3d", spd);
-        buildText(speedStr, panelX, panelY - 4.f, 4.f,
-                  {1.f, 1.f, 1.f, 1.f}, hudV, hudI);
+        // Large speed number
+        float sx = fw - 190.f;
+        buildText(speedStr, sx, 4.f, 3.f, {1.f, 1.f, 1.f, 1.f}, hudV, hudI);
+        // "KM/H" label next to it
+        buildText("KM/H", sx + 60.f, 10.f, 2.f, {0.7f, 0.7f, 0.7f, 1.f}, hudV, hudI);
     }
 
-    // --- RPM bar ---
+    // --- RPM bar (far right of banner strip) ---
     {
-        float barX = fw - 200.f;
-        float barY = fh - 30.f;
-        float barW = 190.f;
-        float barH = 14.f;
+        float barX = fw - 190.f;
+        float barY = 28.f;
+        float barW = 180.f;
+        float barH = 8.f;
 
-        // Background
         buildRect(barX, barY, barW, barH, {0.15f, 0.15f, 0.15f, 1.f}, hudV, hudI);
 
-        // Fill
         float frac = std::clamp(hud.rpm / hud.rpmLimit, 0.f, 1.f);
         glm::vec4 barCol = (frac < 0.7f) ? glm::vec4{0.2f, 0.7f, 0.3f, 1.f}
                          : (frac < 0.9f) ? glm::vec4{0.9f, 0.8f, 0.1f, 1.f}
                                          : glm::vec4{0.9f, 0.2f, 0.1f, 1.f};
         if (frac > 0.01f)
-            buildRect(barX + 2, barY + 2, (barW - 4) * frac, barH - 4, barCol, hudV, hudI);
-
-        // "RPM" label
-        buildText("RPM", barX + barW + 4.f, barY + 1.f, 2.f,
-                  {0.8f, 0.8f, 0.8f, 1.f}, hudV, hudI);
+            buildRect(barX + 1, barY + 1, (barW - 2) * frac, barH - 2, barCol, hudV, hudI);
     }
 
     if (hudV.empty()) return;

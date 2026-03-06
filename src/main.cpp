@@ -87,11 +87,12 @@ int main(int /*argc*/, char** /*argv*/)
             if (e.type == SDL_QUIT) running = false;
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) running = false;
 
-            // Scenario switching: keys 1, 2, 3
+            // Scenario switching: keys 1-4
             if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_1) switchScenario(0);
                 if (e.key.keysym.sym == SDLK_2) switchScenario(1);
                 if (e.key.keysym.sym == SDLK_3) switchScenario(2);
+                if (e.key.keysym.sym == SDLK_4) switchScenario(3);
             }
 
             // Mouse click on scenario buttons
