@@ -43,6 +43,8 @@ compile_shaders(Shaders
     SOURCES
         shaders/scene.vert
         shaders/scene.frag
+        shaders/sky.vert
+        shaders/sky.frag
 )
 
 # ---------------------------------------------------------------------------

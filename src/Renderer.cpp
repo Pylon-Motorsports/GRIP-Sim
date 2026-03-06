@@ -221,6 +221,60 @@ bool Renderer::init(const VulkanContext& ctx)
     vkDestroyShaderModule(dev, fragMod, nullptr);
     vkDestroyShaderModule(dev, vertMod, nullptr);
 
+    // ---- Sky pipeline (fullscreen triangle, no vertex input, no depth write) ----
+    {
+        auto skyVert = readFile("shaders/sky.vert.spv");
+        auto skyFrag = readFile("shaders/sky.frag.spv");
+        if (skyVert.empty() || skyFrag.empty()) return false;
+
+        VkShaderModule sv = makeModule(dev, skyVert);
+        VkShaderModule sf = makeModule(dev, skyFrag);
+
+        VkPipelineShaderStageCreateInfo skyStages[2]{};
+        skyStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        skyStages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        skyStages[0].module = sv;
+        skyStages[0].pName  = "main";
+        skyStages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        skyStages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        skyStages[1].module = sf;
+        skyStages[1].pName  = "main";
+
+        VkPipelineLayoutCreateInfo skyPli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        vkCreatePipelineLayout(dev, &skyPli, nullptr, &skyLayout_);
+
+        VkPipelineVertexInputStateCreateInfo skyVi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+
+        VkPipelineRasterizationStateCreateInfo skyRs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        skyRs.polygonMode = VK_POLYGON_MODE_FILL;
+        skyRs.cullMode    = VK_CULL_MODE_NONE;
+        skyRs.lineWidth   = 1.f;
+
+        VkPipelineDepthStencilStateCreateInfo skyDs{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        skyDs.depthTestEnable  = VK_TRUE;
+        skyDs.depthWriteEnable = VK_FALSE;
+        skyDs.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        VkGraphicsPipelineCreateInfo skyGp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        skyGp.stageCount          = 2;
+        skyGp.pStages             = skyStages;
+        skyGp.pVertexInputState   = &skyVi;
+        skyGp.pInputAssemblyState = &ia;
+        skyGp.pViewportState      = &vps;
+        skyGp.pRasterizationState = &skyRs;
+        skyGp.pMultisampleState   = &ms;
+        skyGp.pDepthStencilState  = &skyDs;
+        skyGp.pColorBlendState    = &cb;
+        skyGp.pDynamicState       = &dyn;
+        skyGp.layout              = skyLayout_;
+        skyGp.renderPass          = ctx.renderPass;
+
+        vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &skyGp, nullptr, &skyPipeline_);
+
+        vkDestroyShaderModule(dev, sf, nullptr);
+        vkDestroyShaderModule(dev, sv, nullptr);
+    }
+
     // ---- Generate meshes ----
     // All indices are absolute — no vertex offset needed in draw calls.
     VList allV;
@@ -304,10 +358,7 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
 
 void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& veh)
 {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &off);
-    vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
 
     uint32_t hw = W / 2;
     uint32_t hh = H / 2;
@@ -337,29 +388,29 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
         return p;
     };
 
-    float range = 8.f;
-    float aspQ  = (float)(hw - GAP) / (float)(hh - GAP);  // quadrant aspect
+    float range = 3.5f;  // tight framing around the car
+    float aspQ  = (float)(hw - GAP) / (float)(hh - GAP);
 
     struct Quad { uint32_t x, y, w, h; glm::mat4 vp; };
     Quad quads[4];
 
-    // Top-left: BEHIND view (ortho, looking at the rear of the car)
+    // Top-left: BEHIND view (ortho)
     quads[0] = { 0, 0, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range*0.4f, range*1.2f, 0.1f, 100.f) *
-        glm::lookAt(pos - fwd * 15.f + glm::vec3{0, 2.f, 0},
-                     pos + glm::vec3{0, 0.5f, 0},
+        vkOrtho(-range*aspQ, range*aspQ, -range*0.3f, range*1.0f, 0.1f, 100.f) *
+        glm::lookAt(pos - fwd * 10.f + glm::vec3{0, 1.f, 0},
+                     pos + glm::vec3{0, 0.4f, 0},
                      glm::vec3{0, 1, 0})
     };
 
-    // Top-right: SIDE view (ortho, from the right)
+    // Top-right: SIDE view (ortho)
     quads[1] = { hw + GAP, 0, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range*0.4f, range*1.2f, 0.1f, 100.f) *
-        glm::lookAt(pos + right * 15.f + glm::vec3{0, 2.f, 0},
-                     pos + glm::vec3{0, 0.5f, 0},
+        vkOrtho(-range*aspQ, range*aspQ, -range*0.3f, range*1.0f, 0.1f, 100.f) *
+        glm::lookAt(pos + right * 10.f + glm::vec3{0, 1.f, 0},
+                     pos + glm::vec3{0, 0.4f, 0},
                      glm::vec3{0, 1, 0})
     };
 
-    // Bottom-left: TOP view (ortho, looking straight down)
+    // Bottom-left: TOP view (ortho)
     quads[2] = { 0, hh + GAP, hw - GAP, hh - GAP,
         vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
         glm::lookAt(pos + glm::vec3{0, 50.f, 0},
@@ -367,11 +418,11 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
                      fwd)
     };
 
-    // Bottom-right: PERSPECTIVE (45° behind, beside, above)
+    // Bottom-right: PERSPECTIVE (45° behind/beside/above)
     {
-        glm::vec3 camOff = glm::normalize(-fwd + right + glm::vec3{0,1,0}) * 12.f;
+        glm::vec3 camOff = glm::normalize(-fwd + right + glm::vec3{0,1,0}) * 6.f;
         quads[3] = { hw + GAP, hh + GAP, hw - GAP, hh - GAP,
-            vkPersp(glm::radians(50.f), aspQ, 0.1f, 300.f) *
+            vkPersp(glm::radians(45.f), aspQ, 0.1f, 300.f) *
             glm::lookAt(pos + camOff,
                          pos + glm::vec3{0, 0.3f, 0},
                          glm::vec3{0, 1, 0})
@@ -393,6 +444,14 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
         sc.extent = { q.w, q.h };
         vkCmdSetScissor(cmd, 0, 1, &sc);
 
+        // Sky background
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline_);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+
+        // Scene on top
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &off);
+        vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
         drawScene(cmd, q.vp, veh);
     }
 }
@@ -405,6 +464,8 @@ void Renderer::shutdown(VkDevice dev)
     vkFreeMemory   (dev, imem_, nullptr);
     vkDestroyBuffer(dev, vbuf_, nullptr);
     vkFreeMemory   (dev, vmem_, nullptr);
+    vkDestroyPipeline      (dev, skyPipeline_, nullptr);
+    vkDestroyPipelineLayout(dev, skyLayout_,   nullptr);
     vkDestroyPipeline      (dev, pipeline_, nullptr);
     vkDestroyPipelineLayout(dev, layout_,   nullptr);
 }

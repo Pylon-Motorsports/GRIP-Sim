@@ -19,8 +19,10 @@ private:
     struct PushConst { glm::mat4 viewProj; glm::mat4 model; };
     struct Slice     { uint32_t firstIdx; uint32_t idxCount; };
 
-    VkPipelineLayout layout_   = VK_NULL_HANDLE;
-    VkPipeline       pipeline_ = VK_NULL_HANDLE;
+    VkPipelineLayout layout_      = VK_NULL_HANDLE;
+    VkPipeline       pipeline_    = VK_NULL_HANDLE;
+    VkPipelineLayout skyLayout_   = VK_NULL_HANDLE;
+    VkPipeline       skyPipeline_ = VK_NULL_HANDLE;
 
     VkBuffer       vbuf_ = VK_NULL_HANDLE;  VkDeviceMemory vmem_ = VK_NULL_HANDLE;
     VkBuffer       ibuf_ = VK_NULL_HANDLE;  VkDeviceMemory imem_ = VK_NULL_HANDLE;
