@@ -93,6 +93,61 @@ static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
     }
 }
 
+// Cosine-profiled bump mesh: unit template [-1,1] in X and Z, [0,1] in Y.
+// Y follows 0.5*(1+cos(pi*z)) so it peaks at center (z=0) and fades to 0 at edges.
+// Scaled per-instance to actual bump dimensions via model matrix.
+static void makeBumpMesh(int zSegs, glm::vec4 col, VList& verts, IList& idx)
+{
+    const float PI = 3.14159265f;
+    uint32_t base = (uint32_t)verts.size();
+
+    // Top surface: 2 columns (x=-1, x=1), zSegs+1 rows
+    for (int j = 0; j <= zSegs; ++j) {
+        float t = (float)j / zSegs;
+        float z = -1.f + 2.f * t;
+        float y = 0.5f * (1.f + std::cos(PI * z));
+        float dydz = -0.5f * PI * std::sin(PI * z);
+        glm::vec3 normal = glm::normalize(glm::vec3{0.f, 1.f, -dydz});
+        verts.push_back({{-1.f, y, z}, normal, col});
+        verts.push_back({{ 1.f, y, z}, normal, col});
+    }
+    for (int j = 0; j < zSegs; ++j) {
+        uint32_t bl = base + j * 2;
+        uint32_t br = bl + 1, tl = bl + 2, tr = bl + 3;
+        idx.insert(idx.end(), {bl, br, tr, bl, tr, tl});
+    }
+
+    // Left side wall (x=-1, facing -X)
+    uint32_t sBase = (uint32_t)verts.size();
+    glm::vec3 leftN{-1.f, 0.f, 0.f};
+    for (int j = 0; j <= zSegs; ++j) {
+        float t = (float)j / zSegs;
+        float z = -1.f + 2.f * t;
+        float y = 0.5f * (1.f + std::cos(PI * z));
+        verts.push_back({{-1.f, 0.f, z}, leftN, col});
+        verts.push_back({{-1.f, y,   z}, leftN, col});
+    }
+    for (int j = 0; j < zSegs; ++j) {
+        uint32_t b0 = sBase + j * 2, t0 = b0 + 1, b1 = b0 + 2, t1 = b0 + 3;
+        idx.insert(idx.end(), {b0, b1, t1, b0, t1, t0});
+    }
+
+    // Right side wall (x=1, facing +X)
+    sBase = (uint32_t)verts.size();
+    glm::vec3 rightN{1.f, 0.f, 0.f};
+    for (int j = 0; j <= zSegs; ++j) {
+        float t = (float)j / zSegs;
+        float z = -1.f + 2.f * t;
+        float y = 0.5f * (1.f + std::cos(PI * z));
+        verts.push_back({{1.f, 0.f, z}, rightN, col});
+        verts.push_back({{1.f, y,   z}, rightN, col});
+    }
+    for (int j = 0; j < zSegs; ++j) {
+        uint32_t b0 = sBase + j * 2, t0 = b0 + 1, b1 = b0 + 2, t1 = b0 + 3;
+        idx.insert(idx.end(), {b1, b0, t0, b1, t0, t1});
+    }
+}
+
 static void makeGround(float halfSize, VList& verts, IList& idx)
 {
     glm::vec4 col{ 0.4f, 0.45f, 0.3f, 0.f };
@@ -468,10 +523,10 @@ bool Renderer::init(const VulkanContext& ctx)
         makeCylinder(0.015f, 0.5f, 8, axleCol, v, i);  // radius=1.5cm, half-length=0.5 (scaled)
     });
 
-    // Unit bump: 1×1×1 half-extent box, scaled per-instance to match actual bump dimensions
+    // Cosine-profiled bump: unit template scaled per-instance
     glm::vec4 bumpCol { 0.85f, 0.75f, 0.15f, 1.f };
     unitBump_ = record([&](VList& v, IList& i){
-        makeBox(1.f, 1.f, 1.f, bumpCol, v, i);
+        makeBumpMesh(16, bumpCol, v, i);
     });
 
     // ---- Upload scene geometry ----
@@ -567,14 +622,15 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         }
     }
 
-    // Bumps — unit box scaled to actual dimensions
+    // Bumps — cosine mesh scaled to actual dimensions
+    // Mesh Y:[0,1], X:[-1,1], Z:[-1,1] → scale to (halfX, height, halfLength)
     for (auto& b : bumps) {
         float halfX = (b.xMax - b.xMin) * 0.5f;
         float centerX = (b.xMax + b.xMin) * 0.5f;
         glm::mat4 bumpT = glm::translate(glm::mat4(1.f),
-            glm::vec3{centerX, b.height * 0.5f, b.zCenter})
+            glm::vec3{centerX, 0.f, b.zCenter})
             * glm::scale(glm::mat4(1.f),
-            glm::vec3{halfX, b.height * 0.5f, b.halfLength});
+            glm::vec3{halfX, b.height, b.halfLength});
         push(bumpT);
         drawSlice(unitBump_);
     }

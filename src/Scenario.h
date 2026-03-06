@@ -29,6 +29,30 @@ inline float groundHeight(const std::vector<Bump>& bumps, float x, float z)
     return h;
 }
 
+// Compute ground surface normal at a world point.
+// Derived from the gradient of the cosine height profile.
+inline glm::vec3 groundNormal(const std::vector<Bump>& bumps, float x, float z)
+{
+    float h = 0.f;
+    float dhdz = 0.f;
+    for (auto& b : bumps) {
+        if (x < b.xMin || x > b.xMax) continue;
+        float dz = z - b.zCenter;
+        float adz = std::abs(dz);
+        if (adz >= b.halfLength) continue;
+        float bh = b.height * 0.5f * (1.f + std::cos(3.14159265f * adz / b.halfLength));
+        if (bh > h) {
+            h = bh;
+            // Derivative of cosine profile: dh/dz = -height * pi/(2*halfLength) * sin(pi*|dz|/halfLength) * sign(dz)
+            float sign = (dz >= 0.f) ? 1.f : -1.f;
+            dhdz = -b.height * 0.5f * (3.14159265f / b.halfLength)
+                   * std::sin(3.14159265f * adz / b.halfLength) * sign;
+        }
+    }
+    // Normal = normalize((-dh/dx, 1, -dh/dz)). Bumps are flat in X, so dh/dx = 0.
+    return glm::normalize(glm::vec3{0.f, 1.f, -dhdz});
+}
+
 inline std::vector<Scenario> createScenarios()
 {
     std::vector<Scenario> scenarios;

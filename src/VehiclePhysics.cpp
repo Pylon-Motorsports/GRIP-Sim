@@ -96,6 +96,7 @@ void VehiclePhysics::update(float dt, const InputState& input)
     // Compute forces for all 4 wheels, then route through subframes
     Wheel::Forces wf[4];
     float longF[4];
+    glm::vec3 wheelNormal[4];
 
     for (int i = 0; i < 4; ++i) {
         glm::vec3 wpos = wheelWorldPos(i);
@@ -106,17 +107,25 @@ void VehiclePhysics::update(float dt, const InputState& input)
             wpos.y, vel_.y, gy, forwardSpeed_, drive, input.brake, dt);
 
         longF[i] = wf[i].longitudinalForce + wf[i].rollingResistance;
+
+        // Surface normal at contact point (for slope forces)
+        if (bumps_ && !bumps_->empty())
+            wheelNormal[i] = groundNormal(*bumps_, wpos.x, wpos.z);
+        else
+            wheelNormal[i] = {0.f, 1.f, 0.f};
     }
 
     // --- Route through subframes ---
     glm::vec3 bodyForce{0.f, -bodyMassKg_ * GRAVITY, 0.f};
     glm::vec3 bodyTorque{0.f};
 
+    // Normal force applied along surface normal (not purely vertical).
+    // On slopes this creates a lateral component that pushes the car downhill.
     // Front subframe
     {
-        auto af = front_.transmitVertical(
-            {0.f, wf[0].normalForce, 0.f},
-            {0.f, wf[1].normalForce, 0.f});
+        glm::vec3 nf0 = wf[0].normalForce * wheelNormal[0];
+        glm::vec3 nf1 = wf[1].normalForce * wheelNormal[1];
+        auto af = front_.transmitVertical(nf0, nf1);
         bodyForce  += af.bodyForce;
         bodyTorque += af.bodyTorque;
         bodyTorque.x += front_.pitchTorqueFromLongitudinal(longF[0], longF[1]);
@@ -124,9 +133,9 @@ void VehiclePhysics::update(float dt, const InputState& input)
 
     // Rear subframe
     {
-        auto af = rear_.transmitVertical(
-            {0.f, wf[2].normalForce, 0.f},
-            {0.f, wf[3].normalForce, 0.f});
+        glm::vec3 nf2 = wf[2].normalForce * wheelNormal[2];
+        glm::vec3 nf3 = wf[3].normalForce * wheelNormal[3];
+        auto af = rear_.transmitVertical(nf2, nf3);
         bodyForce  += af.bodyForce;
         bodyTorque += af.bodyTorque;
         bodyTorque.x += rear_.pitchTorqueFromLongitudinal(longF[2], longF[3]);
