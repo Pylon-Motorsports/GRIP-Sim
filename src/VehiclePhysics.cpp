@@ -14,12 +14,10 @@ void VehiclePhysics::init()
     for (auto& w : wheels_) {
         w.massKg = 20.f;
         w.tire.radius = Vehicle::WHEEL_RADIUS;
+        w.tire.width  = Vehicle::WHEEL_HALF_W * 2.f;
     }
 
     // Suspension mounting points: nearest point on body surface to each wheel.
-    // Body extends ±BODY_HALF_W in X, ±BODY_HALF_H in Y, ±BODY_HALF_L in Z.
-    // Mount at body side wall (X = ±BODY_HALF_W), bottom edge (Y = -BODY_HALF_H),
-    // at the axle Z position.
     float mountY = -Vehicle::BODY_HALF_H;  // bottom of body
     suspensions_[0].mountPoint = {-Vehicle::BODY_HALF_W, mountY,  Vehicle::FRONT_AXLE};
     suspensions_[1].mountPoint = { Vehicle::BODY_HALF_W, mountY,  Vehicle::FRONT_AXLE};
@@ -69,6 +67,7 @@ void VehiclePhysics::reset()
     engine_.rpm = engine_.idleRpm;
     for (auto& w : wheels_) {
         w.angularVel = 0.f;
+        w.tire.deflection = 0.f;
         w.tire.normalLoad = 0.f;
     }
 }
@@ -84,48 +83,33 @@ void VehiclePhysics::update(float dt, const InputState& input)
     float totalDriveTorque = engine_.update(input.throttle, rearAngVel, dt);
     float perWheelDrive = totalDriveTorque * 0.5f;
 
-    // Drivetrain friction
-    float eps = wheels_[2].tire.epsilon;
-    float regSign = forwardSpeed_ / (std::abs(forwardSpeed_) + eps);
-    float drivetrainDrag = 0.f;
-    if (input.throttle < 0.01f) {
-        drivetrainDrag = -(drivetrainFrictionNm_ / wheels_[2].tire.radius) * regSign;
-    }
-
-    // --- Vertical forces (gravity + ground normal) ---
+    // --- Per-wheel forces (tire spring-damper + brush slip + brake) ---
     glm::vec3 bodyForce{0.f, -bodyMassKg_ * GRAVITY, 0.f};
-    glm::vec3 bodyTorque{0.f};  // torque about CG in body-local frame
+    glm::vec3 bodyTorque{0.f};
+    float totalLongForce = 0.f;
 
     for (int i = 0; i < 4; ++i) {
         glm::vec3 wpos = wheelWorldPos(i);
         float gy = wheelGroundY(i);
-        glm::vec3 vForce = wheels_[i].computeVerticalForces(wpos, vel_.y, gy);
+        float drive = (i >= 2) ? perWheelDrive : 0.f;
+
+        Wheel::Forces wf = wheels_[i].computeForces(
+            wpos.y, vel_.y, gy, forwardSpeed_, drive, input.brake, dt);
+
+        // Vertical: normal force transmitted through suspension
+        glm::vec3 vForce{0.f, wf.normalForce, 0.f};
         glm::vec3 transmitted = suspensions_[i].transmitToBody(vForce);
         bodyForce += transmitted;
         bodyTorque += suspensions_[i].torqueOnBody(transmitted);
-    }
 
-    // --- Longitudinal forces (drive, brake, friction) ---
-    float totalLongForce = 0.f;
-    for (int i = 0; i < 4; ++i) {
-        glm::vec3 wpos = wheelWorldPos(i);
-        float gy = wheelGroundY(i);
-        bool grounded = wheels_[i].onGround(wpos, gy);
-
-        float drive = (i >= 2) ? perWheelDrive : 0.f;
-
-        float longForce = wheels_[i].computeLongitudinalForce(
-            drive, input.brake, forwardSpeed_, grounded);
-
-        totalLongForce += suspensions_[i].transmitToBody(glm::vec3{0, 0, longForce}).z;
+        // Longitudinal: tire slip force + rolling resistance along forward direction
+        float longF = wf.longitudinalForce + wf.rollingResistance;
+        totalLongForce += longF;
 
         // Longitudinal force creates pitch torque via mounting point
-        // Force is along body Z, so torque = mountPoint × (0,0,F)
-        // This gives pitch torque = mountPoint.y * F (around X axis)
-        bodyTorque.x += suspensions_[i].mountPoint.y * longForce;
+        bodyTorque.x += suspensions_[i].mountPoint.y * longF;
     }
 
-    totalLongForce += drivetrainDrag;
     bodyForce += fwd * totalLongForce;
 
     // --- Angular damping (prevents oscillation) ---
@@ -187,7 +171,7 @@ glm::vec3 VehiclePhysics::mountWorldPos(int i) const
 }
 
 // Rotate a body-local vector by heading, pitch, and roll.
-// Order: roll (about Z) → pitch (about X) → heading (about Y)
+// Order: roll (about Z) -> pitch (about X) -> heading (about Y)
 glm::vec3 VehiclePhysics::rotateByBody(const glm::vec3& v) const
 {
     // Roll about local Z

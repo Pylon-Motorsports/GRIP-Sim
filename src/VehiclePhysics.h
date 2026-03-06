@@ -56,8 +56,6 @@ private:
     Engine     engine_;
     Wheel      wheels_[4];
     Suspension suspensions_[4];
-    float      drivetrainFrictionNm_ = 8.f;
-
     // Active bump list (owned externally)
     const std::vector<Bump>* bumps_ = nullptr;
 

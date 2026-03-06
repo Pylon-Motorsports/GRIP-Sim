@@ -1,76 +1,125 @@
 #pragma once
-#include <algorithm>
 #include <cmath>
+#include <algorithm>
 
-// Tire contact patch model using regularized Coulomb friction.
+// Tire modeled as a radial spring-damper with geometric contact patch
+// and brush-type slip model.
 //
-// Instead of a discontinuous sign(v) function that goes to 0 at v=0,
-// we use v / (|v| + epsilon) which creates a steep linear ramp near
-// zero speed.  This naturally models static friction: at standstill,
-// the tire provides a restoring force proportional to speed, up to
-// the static friction limit (mu_s * N).
+// The single source of truth is radial deflection 'd': how much the
+// tire's circular cross-section overlaps the ground plane.
 //
-// No LOCK_SPEED threshold, no special "locked" mode — the physics
-// handles the transition continuously.
+//   d = (groundY + R) - hubY
 //
-// For now, 100% traction means mu_s is realistic (~1.0 on dry tarmac)
-// but since all our forces are well within mu_s * N, the tire never
-// exceeds its traction limit (no longitudinal slip yet).
+// Physical limits:
+//   d <= 0:      no contact, zero forces
+//   0 < d < dMax: sidewall deforming, spring-damper active
+//   d >= dMax:    rim contact — tire can't compress further
+//
+// dMax is a physical tire property (not a safety clamp). It represents
+// the point where the rigid rim meets the ground through fully-compressed
+// sidewall rubber. All computations are parameterized on d ∈ [0, dMax],
+// so the bound is native to the model.
 
 class Tire {
 public:
-    float radius              = 0.30f;   // outer radius (m)
-    float halfWidth           = 0.10f;   // half of tread width (m)
-    float staticFrictionCoeff = 1.0f;    // mu_s (dry tarmac, 100% traction)
-    float rollingResistCoeff  = 0.015f;  // C_rr (rolling resistance)
+    // --- Geometry ---
+    float radius        = 0.30f;   // unloaded outer radius (m)
+    float width         = 0.20f;   // tread width (m)
+    float maxDeflection = 0.025f;  // dMax: rim contact limit (m), ~25mm for off-road
 
-    // Regularization parameter: controls the width of the friction
-    // transition near zero speed.  Must be wider than the max per-step
-    // velocity change from braking to avoid sign-flip oscillation.
-    // At 120 Hz with ~10 m/s^2 max decel: epsilon >= 0.08 m/s.
-    float epsilon             = 0.2f;
+    // --- Radial spring-damper (sidewall + inflation pressure) ---
+    float radialStiffness = 200000.f;  // N/m (typical car tire 150k-250k)
+    float radialDamping   = 500.f;     // N·s/m (internal rubber damping)
 
-    // Current normal load on this tire (N), set by suspension each step
-    float normalLoad          = 0.f;
+    // --- Friction ---
+    float mu                  = 1.0f;    // peak friction coefficient (dry tarmac)
+    float rollingResistCoeff  = 0.015f;  // Crr
 
-    // Compute the longitudinal force at the contact patch.
-    //
-    //   netWheelTorque: sum of drive, brake, and bearing torques (Nm)
-    //                   (positive = accelerating forward)
-    //   forwardSpeed:   vehicle forward speed at this corner (m/s)
-    //
-    // Returns: force (N), positive = forward
-    float computeForce(float netWheelTorque, float forwardSpeed) const
+    // --- Brush model ---
+    // Stiffness per unit contact patch area — controls how quickly grip
+    // builds with slip before saturation. Larger patch = higher stiffness
+    // = more linear grip range before sliding.
+    float slipStiffnessPerArea = 3.0e6f;  // N / m² / unit_slip
+
+    // --- Per-step state (read by external code for HUD, etc.) ---
+    float deflection         = 0.f;  // current d (m)
+    float normalLoad         = 0.f;  // current Fn (N)
+    float contactPatchLength = 0.f;  // chord length (m)
+    float contactPatchArea   = 0.f;  // width × chord (m²)
+
+    // Compute deflection from hub height and ground height.
+    // Returns d clamped to [0, dMax].
+    float computeDeflection(float hubY, float groundY) const
     {
-        // Force demanded by wheel torques
-        float demandedForce = netWheelTorque / radius;
-
-        // Rolling resistance: always opposes motion, proportional to normal load
-        // Uses the same regularized sign to avoid discontinuity at zero
-        float regSign = regularizedSign(forwardSpeed);
-        float rollingResist = rollingResistCoeff * normalLoad * regSign;
-
-        // Total force the tire needs to transmit
-        float totalForce = demandedForce - rollingResist;
-
-        // Traction limit: max force the contact patch can sustain
-        float tractionLimit = staticFrictionCoeff * normalLoad;
-
-        // Clamp to traction limit (when exceeded = wheel spin, not modeled yet)
-        return std::clamp(totalForce, -tractionLimit, tractionLimit);
+        float d = (groundY + radius) - hubY;
+        if (d <= 0.f) return 0.f;
+        if (d >= maxDeflection) return maxDeflection;
+        return d;
     }
 
-    // Max force this tire can provide (for external queries)
-    float maxTractionForce() const {
-        return staticFrictionCoeff * normalLoad;
+    // Compute normal force from deflection and its rate of change.
+    //   d:    current deflection [0, dMax]
+    //   dDot: positive = compressing (hub moving toward ground)
+    // Returns force magnitude (N), >= 0 (tire can push, not pull).
+    float computeNormalForce(float d, float dDot) const
+    {
+        if (d <= 0.f) return 0.f;
+        float f = radialStiffness * d + radialDamping * dDot;
+        return std::max(f, 0.f);
     }
 
-private:
-    // Continuous approximation of sign(v): v / (|v| + epsilon)
-    // At v=0: returns 0
-    // At |v| >> epsilon: returns ±1
-    // Near zero: linear ramp with slope 1/epsilon (acts as viscous damping)
-    float regularizedSign(float v) const {
-        return v / (std::abs(v) + epsilon);
+    // Compute contact patch geometry from circular segment at deflection d.
+    // Chord length: L = 2 * sqrt(2Rd - d²)
+    // Patch area:   A = width * L
+    void updateContactPatch(float d)
+    {
+        if (d <= 0.f) {
+            contactPatchLength = 0.f;
+            contactPatchArea = 0.f;
+            return;
+        }
+        float disc = 2.f * radius * d - d * d;
+        contactPatchLength = 2.f * std::sqrt(std::max(disc, 0.f));
+        contactPatchArea = width * contactPatchLength;
+    }
+
+    // Brush tire longitudinal force from slip ratio.
+    //
+    // Uses the cubic brush model for a smooth peak and saturation:
+    //   |F| = mu*Fn * (3*|ks| - 3*|ks|² + |ks|³)   for |ks| < 1
+    //   |F| = mu*Fn                                    for |ks| >= 1
+    // where k = Cx / (3 * mu * Fn) and Cx = stiffnessPerArea * patchArea.
+    //
+    // At small slip this is linear: F ≈ Cx * s (proportional to patch area).
+    // At large slip it saturates at mu * Fn.
+    float computeLongitudinalForce(float slipRatio, float Fn) const
+    {
+        if (Fn <= 0.f || contactPatchArea <= 0.f) return 0.f;
+
+        float Cx = slipStiffnessPerArea * contactPatchArea;
+        float maxF = mu * Fn;
+        float k = Cx / (3.f * maxF);
+        float absKs = std::abs(k * slipRatio);
+
+        float magnitude;
+        if (absKs < 1.f) {
+            magnitude = maxF * (3.f * absKs - 3.f * absKs * absKs
+                                + absKs * absKs * absKs);
+        } else {
+            magnitude = maxF;
+        }
+
+        return (slipRatio >= 0.f) ? magnitude : -magnitude;
+    }
+
+    // Rolling resistance: opposes motion, proportional to normal load.
+    // Uses a tight regularization (eps=0.05) since this is a small force
+    // and doesn't need the wider band that prevents oscillation in larger forces.
+    float computeRollingResistance(float Fn, float forwardSpeed) const
+    {
+        if (Fn <= 0.f) return 0.f;
+        constexpr float eps = 0.05f;
+        float regSign = forwardSpeed / (std::abs(forwardSpeed) + eps);
+        return -rollingResistCoeff * Fn * regSign;
     }
 };

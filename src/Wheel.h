@@ -1,87 +1,132 @@
 #pragma once
 #include "Tire.h"
 #include <glm/glm.hpp>
-#include <algorithm>
 #include <cmath>
 
 // Wheel (rim + brake rotor) paired 1:1 with a Tire.
 //
-// The wheel computes net torque from drive, bearing friction, and brakes.
-// The tire handles the contact patch: converts torque to force, applies
-// traction limits and rolling resistance via regularized Coulomb friction.
+// The wheel tracks its own angular velocity as an independent degree of
+// freedom. The tire's brush slip model couples wheel rotation to vehicle
+// translation: engine torque spins the wheel, slip produces a tire force
+// that accelerates the vehicle, and the tire reaction torque decelerates
+// the wheel back toward ground speed.
 //
-// Wheel and tire are linked 1:1 rotationally and (for now) laterally
-// and vertically — no separate compliance between them yet.
+// Force flow per step:
+//   1. Tire deflection from hub vs ground geometry
+//   2. Normal force from tire radial spring-damper
+//   3. Contact patch area from deflection geometry
+//   4. Slip ratio from wheel speed vs ground speed
+//   5. Longitudinal force from brush model + rolling resistance
+//   6. Integrate wheel angular velocity (drive + brake + bearing - tire reaction)
+
 class Wheel {
 public:
     float massKg   = 20.f;
-    float radius   = 0.17f;   // rim radius (visual only — tire.radius is physics)
-    float halfWidth = 0.08f;  // rim half-width (visual)
     glm::vec3 localOffset{0.f};  // position relative to body CG
 
-    // Rotational state (derived from vehicle speed when on ground)
+    // Rotational state — independent DOF, integrated each step
     float angularVel = 0.f;  // rad/s (positive = forward rolling)
 
-    // Internal friction
-    float bearingFrictionNm = 2.f;    // kinetic bearing drag (Nm)
-    float maxBrakeTorqueNm  = 500.f;  // max hydraulic brake torque per wheel (Nm)
+    // Brakes and bearing
+    float bearingFrictionNm = 2.f;
+    float maxBrakeTorqueNm  = 500.f;
 
     // The tire mounted on this wheel
     Tire tire;
 
-    // Compute vertical forces (gravity + ground normal spring/damper).
-    // Also updates tire.normalLoad for use in longitudinal calculations.
-    glm::vec3 computeVerticalForces(const glm::vec3& worldPos, float velY, float groundY)
-    {
-        constexpr float G = 9.81f;
-        glm::vec3 force{0.f, -massKg * G, 0.f};
+    struct Forces {
+        float normalForce;       // vertical reaction (N), upward
+        float longitudinalForce; // along forward dir (N), from brush slip model
+        float rollingResistance; // along forward dir (N), direct body force
+    };
 
-        float penetration = groundY - (worldPos.y - tire.radius);
-        if (penetration > 0.f) {
-            constexpr float K = 120000.f;
-            float C = 2.f * std::sqrt(K * massKg) * 0.9f;
-            float normalMag = K * penetration - C * velY;
-            normalMag = std::max(normalMag, 0.f);
-            force.y += normalMag;
-            tire.normalLoad = normalMag;
-        } else {
-            tire.normalLoad = 0.f;
-        }
-
-        return force;
-    }
-
-    // Compute longitudinal force at the contact patch.
-    //   driveTorque:  from engine via drivetrain (Nm)
+    // Compute all tire forces and integrate wheel rotation.
+    //
+    //   hubY:         world Y of wheel center (from body position + offset)
+    //   hubVelY:      vertical velocity of hub (m/s, positive = up)
+    //   groundY:      terrain height below this wheel
+    //   forwardSpeed: vehicle forward speed at this corner (m/s)
+    //   driveTorque:  from engine via drivetrain (Nm), 0 for non-driven wheels
     //   brakePedal:   [0, 1]
-    //   forwardSpeed: vehicle forward speed (m/s)
-    //   isOnGround:   whether wheel has ground contact
-    // Returns: longitudinal force (N), positive = forward
-    float computeLongitudinalForce(float driveTorque, float brakePedal,
-                                   float forwardSpeed, bool isOnGround)
+    //   dt:           timestep (s)
+    Forces computeForces(float hubY, float hubVelY, float groundY,
+                         float forwardSpeed, float driveTorque,
+                         float brakePedal, float dt)
     {
-        // Update angular velocity from vehicle speed (no-slip, for now)
-        if (isOnGround) {
-            angularVel = forwardSpeed / tire.radius;
+        Forces f{};
+
+        // 1. Deflection
+        float d = tire.computeDeflection(hubY, groundY);
+        tire.deflection = d;
+
+        // 2. Deflection rate: dDot > 0 means compressing.
+        // d = (groundY + R) - hubY, so dDot = -hubVelY (flat ground approx)
+        float dDot = -hubVelY;
+
+        // 3. Normal force
+        float Fn = tire.computeNormalForce(d, dDot);
+        tire.normalLoad = Fn;
+        f.normalForce = Fn;
+
+        // 4. Contact patch
+        tire.updateContactPatch(d);
+
+        // Wheel rotational inertia (solid cylinder approximation)
+        float I = 0.5f * massKg * tire.radius * tire.radius;
+
+        if (d <= 0.f) {
+            // Airborne: no ground forces, wheel spins freely with drag
+            float regSign = angularVel / (std::abs(angularVel) + 0.2f);
+            float dragTorque = -bearingFrictionNm * regSign;
+            angularVel += (driveTorque + dragTorque) / I * dt;
+            return f;
         }
 
-        if (!isOnGround) return 0.f;
+        // 5. Slip ratio
+        float wheelSpeed = angularVel * tire.radius;
+        constexpr float slipEps = 0.5f;  // regularization for low speed
+        float denom = std::max(std::abs(forwardSpeed), slipEps);
+        float slipRatio = (wheelSpeed - forwardSpeed) / denom;
 
-        // Regularized sign for bearing and brake friction
-        float regSign = forwardSpeed / (std::abs(forwardSpeed) + tire.epsilon);
+        // 6. Longitudinal force from brush model
+        float Fx = tire.computeLongitudinalForce(slipRatio, Fn);
+        f.longitudinalForce = Fx;
 
-        // Net torque at the wheel hub
-        float netTorque = driveTorque;
-        netTorque -= bearingFrictionNm * regSign;
-        netTorque -= maxBrakeTorqueNm * brakePedal * regSign;
+        // 7. Rolling resistance — applied directly to vehicle body, NOT through
+        // the wheel/slip model. Rolling resistance is caused by asymmetric contact
+        // patch deformation, not by a torque at the hub.
+        f.rollingResistance = tire.computeRollingResistance(Fn, forwardSpeed);
 
-        // Tire handles the contact patch physics
-        return tire.computeForce(netTorque, forwardSpeed);
+        // 8. Integrate wheel angular velocity
+        //    Torques on wheel: drive + bearing - tire reaction, then brake friction
+        float regSign = angularVel / (std::abs(angularVel) + 0.2f);
+        float bearingTorque = -bearingFrictionNm * regSign;
+        float tireReaction  = -Fx * tire.radius;
+
+        float unbrakeTorque = driveTorque + bearingTorque + tireReaction;
+
+        // Brake is a friction device: opposes rotation up to its torque capacity.
+        // When the wheel is nearly stopped and the brake can absorb all remaining
+        // torque, the wheel locks — no oscillation, no velocity-dependent ramp.
+        float brakeCap = maxBrakeTorqueNm * brakePedal;
+        float netTorque;
+        if (brakeCap > 0.f && std::abs(unbrakeTorque) <= brakeCap
+            && std::abs(angularVel) < 1.f)
+        {
+            // Brake holds: absorbs all torque, wheel is locked
+            netTorque = 0.f;
+            angularVel = 0.f;
+        } else {
+            // Brake is sliding or not applied: opposes rotation
+            float brakeTorque = -brakeCap * regSign;
+            netTorque = unbrakeTorque + brakeTorque;
+        }
+
+        angularVel += netTorque / I * dt;
+
+        return f;
     }
 
-    bool onGround(const glm::vec3& worldPos, float groundY) const {
-        return (worldPos.y - tire.radius) <= groundY + 0.001f;
-    }
-
+    // Ground speed from wheel rotation (for speedometer)
     float groundSpeed() const { return angularVel * tire.radius; }
 };

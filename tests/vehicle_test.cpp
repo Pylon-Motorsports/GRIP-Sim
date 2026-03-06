@@ -114,54 +114,100 @@ static void testClutchEngagement()
 // Tire unit tests
 // ============================================================================
 
-static void testTireRollingResistance()
+static void testTireDeflectionBounds()
 {
     Tire t;
-    t.normalLoad = 1000.f;  // 1000 N
-    t.rollingResistCoeff = 0.015f;
+    t.radius = 0.30f;
+    t.maxDeflection = 0.025f;
 
-    // At moderate speed, rolling resistance = C_rr * N * regSign(v)
-    // regSign(5.0) ≈ 5.0 / (5.0 + 0.02) ≈ 0.996
-    float force = t.computeForce(0.f, 5.0f);  // no wheel torque, 5 m/s
-    CHECK(force < -10.f, "rolling resistance opposes forward motion");
-    CHECK(force > -20.f, "rolling resistance is modest (C_rr * N * ~1)");
+    // No contact: hub above ground + R
+    CHECK(t.computeDeflection(0.35f, 0.f) == 0.f, "no deflection when hub above ground+R");
+
+    // Partial deflection
+    float d = t.computeDeflection(0.29f, 0.f);  // 10mm overlap
+    CHECK(APPROX(d, 0.01f, 0.001f), "correct deflection for 10mm overlap");
+
+    // Clamped at dMax
+    float dMax = t.computeDeflection(0.20f, 0.f);  // way below ground
+    CHECK(APPROX(dMax, 0.025f, 0.001f), "deflection clamped at dMax");
 }
 
-static void testTireHoldsAtZeroSpeed()
+static void testTireNormalForce()
 {
     Tire t;
-    t.normalLoad = 1000.f;
+    t.radialStiffness = 200000.f;
+    t.radialDamping = 500.f;
 
-    // At zero speed with no torque, force should be essentially zero
-    float force = t.computeForce(0.f, 0.f);
-    CHECK(std::abs(force) < 0.1f, "tire produces ~zero force at standstill");
+    // Spring force at 10mm deflection: 200000 * 0.01 = 2000 N
+    float Fn = t.computeNormalForce(0.01f, 0.f);
+    CHECK(APPROX(Fn, 2000.f, 1.f), "normal force from spring at 10mm");
+
+    // Damper adds force when compressing (dDot > 0)
+    float FnDamped = t.computeNormalForce(0.01f, 1.f);  // 1 m/s compress
+    CHECK(FnDamped > Fn, "damper adds force during compression");
+    CHECK(APPROX(FnDamped, 2500.f, 1.f), "spring + damper force correct");
+
+    // Tire can't pull: if damper overwhelms spring, force floors at 0
+    float FnRebound = t.computeNormalForce(0.001f, -5.f);  // fast rebound
+    CHECK(FnRebound >= 0.f, "tire can't pull (normal force >= 0)");
+
+    // No contact
+    CHECK(t.computeNormalForce(0.f, 0.f) == 0.f, "zero force at zero deflection");
 }
 
-static void testTireTractionLimit()
+static void testTireContactPatch()
 {
     Tire t;
-    t.normalLoad = 1000.f;
-    t.staticFrictionCoeff = 1.0f;
+    t.radius = 0.30f;
+    t.width = 0.20f;
 
-    // Demand way more force than traction allows
-    float hugeForce = t.computeForce(5000.f, 10.f);  // 5000 Nm at wheel
-    CHECK(std::abs(hugeForce) <= 1000.f + 1.f, "tire clamps to traction limit");
+    // At 10mm deflection: L = 2*sqrt(2*0.3*0.01 - 0.01^2) = 2*sqrt(0.0059) ≈ 0.154m
+    t.updateContactPatch(0.01f);
+    CHECK(t.contactPatchLength > 0.14f && t.contactPatchLength < 0.16f,
+          "contact patch length reasonable at 10mm deflection");
+    CHECK(APPROX(t.contactPatchArea, t.width * t.contactPatchLength, 0.001f),
+          "patch area = width * length");
+
+    // Zero deflection = no patch
+    t.updateContactPatch(0.f);
+    CHECK(t.contactPatchArea == 0.f, "no patch at zero deflection");
+
+    // More deflection = bigger patch
+    t.updateContactPatch(0.005f);
+    float smallPatch = t.contactPatchArea;
+    t.updateContactPatch(0.020f);
+    float bigPatch = t.contactPatchArea;
+    CHECK(bigPatch > smallPatch, "more deflection = bigger contact patch");
 }
 
-static void testTireRegularizedFriction()
+static void testTireBrushModel()
 {
     Tire t;
-    t.normalLoad = 1000.f;
-    t.epsilon = 0.02f;
+    t.mu = 1.0f;
+    t.slipStiffnessPerArea = 3.0e6f;
+    t.width = 0.20f;
+    t.radius = 0.30f;
 
-    // Very low speed: friction ramps linearly, not discontinuously
-    float f1 = t.computeForce(0.f, 0.001f);
-    float f2 = t.computeForce(0.f, 0.01f);
-    float f3 = t.computeForce(0.f, 0.1f);
+    // Setup a loaded tire with contact
+    t.updateContactPatch(0.01f);  // ~10mm deflection
+    float Fn = 2000.f;
 
-    // Forces should increase with speed (rolling resistance ramps up)
-    CHECK(std::abs(f1) < std::abs(f2), "friction increases from 0.001 to 0.01 m/s");
-    CHECK(std::abs(f2) < std::abs(f3), "friction increases from 0.01 to 0.1 m/s");
+    // Small slip: force should be roughly linear (proportional to slip)
+    float F1 = t.computeLongitudinalForce(0.01f, Fn);
+    float F2 = t.computeLongitudinalForce(0.02f, Fn);
+    CHECK(F2 > F1, "more slip = more force in linear region");
+    CHECK(F1 > 0.f, "positive slip = positive force");
+
+    // Large slip: saturates at mu * Fn
+    float Fsat = t.computeLongitudinalForce(1.0f, Fn);
+    CHECK(APPROX(Fsat, t.mu * Fn, 1.f), "brush model saturates at mu*Fn");
+
+    // Negative slip: negative force
+    float Fneg = t.computeLongitudinalForce(-0.05f, Fn);
+    CHECK(Fneg < 0.f, "negative slip = negative force");
+
+    // No normal load: no force
+    CHECK(t.computeLongitudinalForce(0.1f, 0.f) == 0.f, "no force without normal load");
 }
 
 // ============================================================================
@@ -210,7 +256,7 @@ static void testVehicleCoastsToStop()
     CHECK(peakSpeed > 3.f, "vehicle moving before coasting");
 
     InputState nothing{};
-    simulate(phys, nothing, 30.f);
+    simulate(phys, nothing, 60.f);
 
     CHECK(phys.getForwardSpeed() < 0.5f,
           "vehicle coasts to near-stop from friction");
@@ -257,10 +303,9 @@ static void testEngineBraking()
     float speed2 = phys.getForwardSpeed();
 
     float decel = speed1 - speed2;
-    // Centrifugal clutch disengages at low drivenRPM, so engine braking
-    // is limited.  Decel comes mainly from drivetrain friction + rolling
-    // resistance + bearing drag.
-    CHECK(decel > 0.3f, "drivetrain friction decelerates vehicle when off throttle");
+    // Decel comes from rolling resistance + bearing drag through slip model.
+    // Centrifugal clutch disengages at low RPM, limiting engine braking.
+    CHECK(decel > 0.2f, "rolling resistance + bearing drag decelerates off throttle");
 }
 
 static void testEqualBrakingFrontRear()
@@ -306,7 +351,6 @@ static void testDirectBackwardDrift()
     // Let it settle vertically
     InputState nothing{};
     simulate(phys, nothing, 1.f);
-    std::printf("  settled speed=%.6f\n", phys.getForwardSpeed());
 
     // Give it a small forward push, then check it damps
     InputState gas{}; gas.throttle = 1.f;
@@ -391,10 +435,10 @@ int main()
     testEngineRevLimiter();
     testClutchEngagement();
 
-    testTireRollingResistance();
-    testTireHoldsAtZeroSpeed();
-    testTireTractionLimit();
-    testTireRegularizedFriction();
+    testTireDeflectionBounds();
+    testTireNormalForce();
+    testTireContactPatch();
+    testTireBrushModel();
 
     testVehicleAccelerates();
     testVehicleBrakes();
