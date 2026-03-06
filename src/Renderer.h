@@ -50,7 +50,7 @@ private:
     static constexpr uint32_t HUD_MAX_VERTS = 4096;
     static constexpr uint32_t HUD_MAX_IDX   = 8192;
 
-    Slice ground_, body_, rim_, tire_, axle_, bumpWide_, bumpNarrow_;
+    Slice ground_, body_, rim_, tire_, axle_, unitBump_;
 
     void drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
                    const std::vector<Bump>& bumps);

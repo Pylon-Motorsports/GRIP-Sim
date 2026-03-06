@@ -468,13 +468,10 @@ bool Renderer::init(const VulkanContext& ctx)
         makeCylinder(0.015f, 0.5f, 8, axleCol, v, i);  // radius=1.5cm, half-length=0.5 (scaled)
     });
 
-    // Bump templates: yellow boxes
+    // Unit bump: 1×1×1 half-extent box, scaled per-instance to match actual bump dimensions
     glm::vec4 bumpCol { 0.85f, 0.75f, 0.15f, 1.f };
-    bumpWide_ = record([&](VList& v, IList& i){
-        makeBox(1.5f, 0.04f, 0.25f, bumpCol, v, i);   // 3m wide x 8cm tall x 50cm long
-    });
-    bumpNarrow_ = record([&](VList& v, IList& i){
-        makeBox(0.75f, 0.04f, 0.25f, bumpCol, v, i);   // 1.5m wide
+    unitBump_ = record([&](VList& v, IList& i){
+        makeBox(1.f, 1.f, 1.f, bumpCol, v, i);
     });
 
     // ---- Upload scene geometry ----
@@ -570,15 +567,16 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         }
     }
 
-    // Bumps
+    // Bumps — unit box scaled to actual dimensions
     for (auto& b : bumps) {
         float halfX = (b.xMax - b.xMin) * 0.5f;
         float centerX = (b.xMax + b.xMin) * 0.5f;
-        bool wide = halfX > 1.f;
         glm::mat4 bumpT = glm::translate(glm::mat4(1.f),
-            glm::vec3{centerX, b.height * 0.5f, b.zCenter});
+            glm::vec3{centerX, b.height * 0.5f, b.zCenter})
+            * glm::scale(glm::mat4(1.f),
+            glm::vec3{halfX, b.height * 0.5f, b.halfLength});
         push(bumpT);
-        drawSlice(wide ? bumpWide_ : bumpNarrow_);
+        drawSlice(unitBump_);
     }
 }
 

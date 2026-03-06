@@ -1,6 +1,6 @@
 #pragma once
 #include "Wheel.h"
-#include "Suspension.h"
+#include "Subframe.h"
 #include "Engine.h"
 #include "Input.h"
 #include "Vehicle.h"
@@ -55,7 +55,8 @@ private:
     // Drivetrain
     Engine     engine_;
     Wheel      wheels_[4];
-    Suspension suspensions_[4];
+    Subframe   front_;   // wheels 0 (left), 1 (right)
+    Subframe   rear_;    // wheels 2 (left), 3 (right)
     // Active bump list (owned externally)
     const std::vector<Bump>* bumps_ = nullptr;
 

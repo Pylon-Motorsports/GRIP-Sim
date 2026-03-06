@@ -66,17 +66,15 @@ inline std::vector<Scenario> createScenarios()
         scenarios.push_back({"One-Side Bumps", std::move(bumps)});
     }
 
-    // 4: Rolling hills — gentle sine-wave undulations
+    // 4: Rolling hills — visible undulations
     {
         std::vector<Bump> bumps;
-        // Create overlapping wide bumps to approximate a rolling sine wave.
-        // Each bump is a cosine hump; overlapping them creates continuous hills.
-        for (int i = 0; i < 20; ++i) {
+        for (int i = 0; i < 15; ++i) {
             bumps.push_back({
-                5.f + i * 12.f,  // center every 12m
-                6.0f,            // 12m total wavelength (halfLength=6m for wide hills)
-                0.15f + 0.10f * std::sin(i * 1.3f),  // vary height 5-25cm
-                -5.f, 5.f        // full width
+                10.f + i * 20.f, // center every 20m
+                10.0f,           // 20m total wavelength (halfLength=10m)
+                0.35f + 0.25f * std::sin(i * 1.3f),  // vary height 10-60cm
+                -5.f, 5.f       // full width
             });
         }
         scenarios.push_back({"Hills", std::move(bumps)});
