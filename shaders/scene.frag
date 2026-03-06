@@ -9,9 +9,15 @@ layout(location = 0) out vec4 outColor;
 void main()
 {
     vec3 sun  = normalize(vec3(0.3, 1.0, 0.5));
-    vec3 n    = normalize(fragNormal);
-    float diff = max(dot(n, sun), 0.0);
-    float light = 0.35 + 0.65 * diff;
+    float nLen = length(fragNormal);
+
+    // Flat/unlit when normal is near-zero (HUD elements)
+    float light = 1.0;
+    if (nLen > 0.1) {
+        vec3 n = fragNormal / nLen;
+        float diff = max(dot(n, sun), 0.0);
+        light = 0.35 + 0.65 * diff;
+    }
 
     vec3 col;
     if (fragColor.a < 0.5) {

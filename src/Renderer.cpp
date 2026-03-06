@@ -2,6 +2,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <fstream>
+#include <algorithm>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -30,10 +31,6 @@ static VkShaderModule makeModule(VkDevice dev, const std::vector<char>& code)
 }
 
 // ---- mesh generation -------------------------------------------------------
-//
-// All triangles use CCW winding when viewed from outside the surface.
-// The pipeline uses VK_FRONT_FACE_CLOCKWISE to account for the Vulkan Y-flip
-// in the projection matrix (proj[1][1] *= -1).
 
 using VList = std::vector<Vertex>;
 using IList = std::vector<uint32_t>;
@@ -41,7 +38,6 @@ using IList = std::vector<uint32_t>;
 static void makeBox(float hx, float hy, float hz, glm::vec4 col,
                     VList& verts, IList& idx)
 {
-    // 6 faces, 4 verts each.  Vertices listed CCW when viewed from outside.
     auto face = [&](glm::vec3 p0, glm::vec3 p1, glm::vec3 p2, glm::vec3 p3, glm::vec3 n) {
         uint32_t b = (uint32_t)verts.size();
         verts.push_back({ p0, n, col });
@@ -50,18 +46,17 @@ static void makeBox(float hx, float hy, float hz, glm::vec4 col,
         verts.push_back({ p3, n, col });
         idx.insert(idx.end(), { b, b+1, b+2, b, b+2, b+3 });
     };
-    face({-hx,-hy, hz}, { hx,-hy, hz}, { hx, hy, hz}, {-hx, hy, hz}, { 0, 0, 1}); // +Z
-    face({ hx,-hy,-hz}, {-hx,-hy,-hz}, {-hx, hy,-hz}, { hx, hy,-hz}, { 0, 0,-1}); // -Z
-    face({ hx,-hy, hz}, { hx,-hy,-hz}, { hx, hy,-hz}, { hx, hy, hz}, { 1, 0, 0}); // +X
-    face({-hx,-hy,-hz}, {-hx,-hy, hz}, {-hx, hy, hz}, {-hx, hy,-hz}, {-1, 0, 0}); // -X
-    face({-hx, hy, hz}, { hx, hy, hz}, { hx, hy,-hz}, {-hx, hy,-hz}, { 0, 1, 0}); // +Y
-    face({-hx,-hy,-hz}, { hx,-hy,-hz}, { hx,-hy, hz}, {-hx,-hy, hz}, { 0,-1, 0}); // -Y
+    face({-hx,-hy, hz}, { hx,-hy, hz}, { hx, hy, hz}, {-hx, hy, hz}, { 0, 0, 1});
+    face({ hx,-hy,-hz}, {-hx,-hy,-hz}, {-hx, hy,-hz}, { hx, hy,-hz}, { 0, 0,-1});
+    face({ hx,-hy, hz}, { hx,-hy,-hz}, { hx, hy,-hz}, { hx, hy, hz}, { 1, 0, 0});
+    face({-hx,-hy,-hz}, {-hx,-hy, hz}, {-hx, hy, hz}, {-hx, hy,-hz}, {-1, 0, 0});
+    face({-hx, hy, hz}, { hx, hy, hz}, { hx, hy,-hz}, {-hx, hy,-hz}, { 0, 1, 0});
+    face({-hx,-hy,-hz}, { hx,-hy,-hz}, { hx,-hy, hz}, {-hx,-hy, hz}, { 0,-1, 0});
 }
 
 static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
                          VList& verts, IList& idx)
 {
-    // Axis along X.  Left cap at x=-halfW, right cap at x=+halfW.
     const float TAU = 6.283185307f;
 
     uint32_t cL = (uint32_t)verts.size();
@@ -69,7 +64,6 @@ static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
     uint32_t cR = (uint32_t)verts.size();
     verts.push_back({{  halfW, 0, 0 }, {  1, 0, 0 }, col });
 
-    // Per-segment: capLeft, capRight, sideLeft, sideRight
     struct Ring { uint32_t capL, capR, sideL, sideR; };
     std::vector<Ring> rings(segs);
 
@@ -91,15 +85,8 @@ static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
 
     for (int i = 0; i < segs; ++i) {
         int j = (i + 1) % segs;
-
-        // Left cap:  CCW from -X viewpoint  →  center, ring[j], ring[i]
         idx.insert(idx.end(), { cL, rings[j].capL, rings[i].capL });
-
-        // Right cap: CCW from +X viewpoint  →  center, ring[i], ring[j]
         idx.insert(idx.end(), { cR, rings[i].capR, rings[j].capR });
-
-        // Side quad: CCW from outside
-        // Two triangles: (sideL_i, sideL_j, sideR_j) and (sideL_i, sideR_j, sideR_i)
         idx.insert(idx.end(), {
             rings[i].sideL, rings[j].sideL, rings[j].sideR,
             rings[i].sideL, rings[j].sideR, rings[i].sideR });
@@ -108,11 +95,9 @@ static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
 
 static void makeGround(float halfSize, VList& verts, IList& idx)
 {
-    // Quad at Y=0, normal +Y.  Alpha < 0.5 triggers checkerboard in shader.
     glm::vec4 col{ 0.4f, 0.45f, 0.3f, 0.f };
     glm::vec3 n{ 0, 1, 0 };
     float s = halfSize;
-    // CCW from above (+Y): cross((s,0,s)-(-s,0,s), (s,0,-s)-(-s,0,s)) = +Y
     uint32_t b = (uint32_t)verts.size();
     verts.push_back({{ -s, 0,  s }, n, col });
     verts.push_back({{  s, 0,  s }, n, col });
@@ -121,11 +106,188 @@ static void makeGround(float halfSize, VList& verts, IList& idx)
     idx.insert(idx.end(), { b, b+1, b+2, b, b+2, b+3 });
 }
 
+// ---- 5x7 bitmap font -------------------------------------------------------
+
+// Each glyph: 7 rows, 5 bits per row (MSB = leftmost pixel).
+// Covers ASCII 32..90 (space through Z) plus a few extras.
+static const uint8_t FONT_5x7[][7] = {
+    // 32: ' '
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+    // 33: '!'
+    {0x04,0x04,0x04,0x04,0x04,0x00,0x04},
+    // 34: '"'
+    {0x0A,0x0A,0x00,0x00,0x00,0x00,0x00},
+    // 35: '#'
+    {0x0A,0x1F,0x0A,0x0A,0x1F,0x0A,0x00},
+    // 36: '$'
+    {0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04},
+    // 37: '%'
+    {0x18,0x19,0x02,0x04,0x08,0x13,0x03},
+    // 38: '&'
+    {0x08,0x14,0x14,0x08,0x15,0x12,0x0D},
+    // 39: '''
+    {0x04,0x04,0x00,0x00,0x00,0x00,0x00},
+    // 40: '('
+    {0x02,0x04,0x08,0x08,0x08,0x04,0x02},
+    // 41: ')'
+    {0x08,0x04,0x02,0x02,0x02,0x04,0x08},
+    // 42: '*'
+    {0x00,0x04,0x15,0x0E,0x15,0x04,0x00},
+    // 43: '+'
+    {0x00,0x04,0x04,0x1F,0x04,0x04,0x00},
+    // 44: ','
+    {0x00,0x00,0x00,0x00,0x00,0x04,0x08},
+    // 45: '-'
+    {0x00,0x00,0x00,0x1F,0x00,0x00,0x00},
+    // 46: '.'
+    {0x00,0x00,0x00,0x00,0x00,0x00,0x04},
+    // 47: '/'
+    {0x01,0x01,0x02,0x04,0x08,0x10,0x10},
+    // 48: '0'
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E},
+    // 49: '1'
+    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E},
+    // 50: '2'
+    {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F},
+    // 51: '3'
+    {0x0E,0x11,0x01,0x06,0x01,0x11,0x0E},
+    // 52: '4'
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02},
+    // 53: '5'
+    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E},
+    // 54: '6'
+    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E},
+    // 55: '7'
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
+    // 56: '8'
+    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E},
+    // 57: '9'
+    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C},
+    // 58: ':'
+    {0x00,0x00,0x04,0x00,0x00,0x04,0x00},
+    // 59: ';'
+    {0x00,0x00,0x04,0x00,0x00,0x04,0x08},
+    // 60: '<'
+    {0x02,0x04,0x08,0x10,0x08,0x04,0x02},
+    // 61: '='
+    {0x00,0x00,0x1F,0x00,0x1F,0x00,0x00},
+    // 62: '>'
+    {0x08,0x04,0x02,0x01,0x02,0x04,0x08},
+    // 63: '?'
+    {0x0E,0x11,0x01,0x02,0x04,0x00,0x04},
+    // 64: '@'
+    {0x0E,0x11,0x17,0x15,0x17,0x10,0x0E},
+    // 65: 'A'
+    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11},
+    // 66: 'B'
+    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E},
+    // 67: 'C'
+    {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E},
+    // 68: 'D'
+    {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E},
+    // 69: 'E'
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F},
+    // 70: 'F'
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10},
+    // 71: 'G'
+    {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E},
+    // 72: 'H'
+    {0x11,0x11,0x11,0x1F,0x11,0x11,0x11},
+    // 73: 'I'
+    {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E},
+    // 74: 'J'
+    {0x07,0x02,0x02,0x02,0x02,0x12,0x0C},
+    // 75: 'K'
+    {0x11,0x12,0x14,0x18,0x14,0x12,0x11},
+    // 76: 'L'
+    {0x10,0x10,0x10,0x10,0x10,0x10,0x1F},
+    // 77: 'M'
+    {0x11,0x1B,0x15,0x15,0x11,0x11,0x11},
+    // 78: 'N'
+    {0x11,0x19,0x15,0x13,0x11,0x11,0x11},
+    // 79: 'O'
+    {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E},
+    // 80: 'P'
+    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10},
+    // 81: 'Q'
+    {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D},
+    // 82: 'R'
+    {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11},
+    // 83: 'S'
+    {0x0E,0x11,0x10,0x0E,0x01,0x11,0x0E},
+    // 84: 'T'
+    {0x1F,0x04,0x04,0x04,0x04,0x04,0x04},
+    // 85: 'U'
+    {0x11,0x11,0x11,0x11,0x11,0x11,0x0E},
+    // 86: 'V'
+    {0x11,0x11,0x11,0x11,0x0A,0x0A,0x04},
+    // 87: 'W'
+    {0x11,0x11,0x11,0x15,0x15,0x1B,0x11},
+    // 88: 'X'
+    {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11},
+    // 89: 'Y'
+    {0x11,0x11,0x0A,0x04,0x04,0x04,0x04},
+    // 90: 'Z'
+    {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F},
+};
+
+// HUD Z: near the near plane so HUD always passes depth test over scene geometry.
+// Ortho maps Z=[-1,1] to depth [0,1], so Z=-0.99 maps to depth ~0.005.
+static constexpr float HUD_Z = -0.99f;
+
+// Build quads for a text string at (x,y) with given pixel scale and color.
+// normal=(0,0,0) for unlit HUD rendering.
+static void buildText(const char* str, float x, float y, float scale,
+                      glm::vec4 col, VList& verts, IList& idx)
+{
+    constexpr glm::vec3 N{0,0,0};  // zero normal = unlit
+    float cx = x;
+    for (const char* p = str; *p; ++p) {
+        int ch = (int)(unsigned char)*p;
+        if (ch < 32 || ch > 90) {
+            // Lowercase -> uppercase for simplicity
+            if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
+            else { cx += 6.f * scale; continue; }
+        }
+        int gi = ch - 32;
+        for (int row = 0; row < 7; ++row) {
+            uint8_t bits = FONT_5x7[gi][row];
+            for (int col_i = 0; col_i < 5; ++col_i) {
+                if (bits & (0x10 >> col_i)) {
+                    float px = cx + col_i * scale;
+                    float py = y + row * scale;
+                    uint32_t b = (uint32_t)verts.size();
+                    verts.push_back({{px,        py,        HUD_Z}, N, col});
+                    verts.push_back({{px+scale,  py,        HUD_Z}, N, col});
+                    verts.push_back({{px+scale,  py+scale,  HUD_Z}, N, col});
+                    verts.push_back({{px,        py+scale,  HUD_Z}, N, col});
+                    idx.insert(idx.end(), {b, b+1, b+2, b, b+2, b+3});
+                }
+            }
+        }
+        cx += 6.f * scale;
+    }
+}
+
+// Build a filled rectangle
+static void buildRect(float x, float y, float w, float h, glm::vec4 col,
+                      VList& verts, IList& idx)
+{
+    constexpr glm::vec3 N{0,0,0};
+    uint32_t b = (uint32_t)verts.size();
+    verts.push_back({{x,   y,   HUD_Z}, N, col});
+    verts.push_back({{x+w, y,   HUD_Z}, N, col});
+    verts.push_back({{x+w, y+h, HUD_Z}, N, col});
+    verts.push_back({{x,   y+h, HUD_Z}, N, col});
+    idx.insert(idx.end(), {b, b+1, b+2, b, b+2, b+3});
+}
+
 // ---- init ------------------------------------------------------------------
 
 bool Renderer::init(const VulkanContext& ctx)
 {
     VkDevice dev = ctx.device;
+    dev_ = dev;
 
     // ---- Pipeline layout ----
     VkPushConstantRange pcr{};
@@ -178,8 +340,7 @@ bool Renderer::init(const VulkanContext& ctx)
 
     VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode    = VK_CULL_MODE_BACK_BIT;
-    rs.frontFace   = VK_FRONT_FACE_CLOCKWISE;  // accounts for Vulkan Y-flip
+    rs.cullMode    = VK_CULL_MODE_NONE;
     rs.lineWidth   = 1.f;
 
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -221,7 +382,7 @@ bool Renderer::init(const VulkanContext& ctx)
     vkDestroyShaderModule(dev, fragMod, nullptr);
     vkDestroyShaderModule(dev, vertMod, nullptr);
 
-    // ---- Sky pipeline (fullscreen triangle, no vertex input, no depth write) ----
+    // ---- Sky pipeline ----
     {
         auto skyVert = readFile("shaders/sky.vert.spv");
         auto skyFrag = readFile("shaders/sky.frag.spv");
@@ -276,7 +437,6 @@ bool Renderer::init(const VulkanContext& ctx)
     }
 
     // ---- Generate meshes ----
-    // All indices are absolute — no vertex offset needed in draw calls.
     VList allV;
     IList allI;
 
@@ -288,17 +448,36 @@ bool Renderer::init(const VulkanContext& ctx)
 
     ground_ = record([](VList& v, IList& i){ makeGround(100.f, v, i); });
 
-    glm::vec4 bodyCol  { 0.25f, 0.55f, 0.30f, 1.f };  // green
-    glm::vec4 wheelCol { 0.20f, 0.20f, 0.20f, 1.f };  // dark gray
+    glm::vec4 bodyCol { 0.25f, 0.55f, 0.30f, 1.f };  // green
+    glm::vec4 rimCol  { 0.90f, 0.92f, 0.95f, 1.f };  // white
+    glm::vec4 tireCol { 0.10f, 0.10f, 0.10f, 1.f };  // black rubber
 
     body_  = record([&](VList& v, IList& i){
         makeBox(Vehicle::BODY_HALF_W, Vehicle::BODY_HALF_H, Vehicle::BODY_HALF_L, bodyCol, v, i);
     });
-    wheel_ = record([&](VList& v, IList& i){
-        makeCylinder(Vehicle::WHEEL_RADIUS, Vehicle::WHEEL_HALF_W, 16, wheelCol, v, i);
+    rim_ = record([&](VList& v, IList& i){
+        makeCylinder(Vehicle::RIM_RADIUS, Vehicle::RIM_HALF_W, 16, rimCol, v, i);
+    });
+    tire_ = record([&](VList& v, IList& i){
+        makeCylinder(Vehicle::TIRE_RADIUS, Vehicle::TIRE_HALF_W, 16, tireCol, v, i);
     });
 
-    // ---- Upload ----
+    // Axle template: thin cylinder along X, unit length (will be scaled per-axle)
+    glm::vec4 axleCol { 0.4f, 0.4f, 0.45f, 1.f };  // dark steel
+    axle_ = record([&](VList& v, IList& i){
+        makeCylinder(0.015f, 0.5f, 8, axleCol, v, i);  // radius=1.5cm, half-length=0.5 (scaled)
+    });
+
+    // Bump templates: yellow boxes
+    glm::vec4 bumpCol { 0.85f, 0.75f, 0.15f, 1.f };
+    bumpWide_ = record([&](VList& v, IList& i){
+        makeBox(1.5f, 0.04f, 0.25f, bumpCol, v, i);   // 3m wide x 8cm tall x 50cm long
+    });
+    bumpNarrow_ = record([&](VList& v, IList& i){
+        makeBox(0.75f, 0.04f, 0.25f, bumpCol, v, i);   // 1.5m wide
+    });
+
+    // ---- Upload scene geometry ----
     {
         VkDeviceSize vSz = allV.size() * sizeof(Vertex);
         vbuf_ = ctx.allocBuffer(vSz,
@@ -320,13 +499,24 @@ bool Renderer::init(const VulkanContext& ctx)
         vkUnmapMemory(dev, imem_);
     }
 
+    // ---- HUD buffers (dynamic, updated each frame) ----
+    hudVbuf_ = ctx.allocBuffer(HUD_MAX_VERTS * sizeof(Vertex),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        hudVmem_);
+    hudIbuf_ = ctx.allocBuffer(HUD_MAX_IDX * sizeof(uint32_t),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        hudImem_);
+
     std::printf("Meshes: %zu verts, %zu indices\n", allV.size(), allI.size());
     return true;
 }
 
 // ---- draw ------------------------------------------------------------------
 
-void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh)
+void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
+                         const std::vector<Bump>& bumps)
 {
     auto push = [&](const glm::mat4& model) {
         PushConst pc{ vp, model };
@@ -336,32 +526,195 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         vkCmdDrawIndexed(cmd, s.idxCount, 1, s.firstIdx, 0, 0);
     };
 
-    float h = veh.heading;
-    glm::mat4 vehicleT = glm::translate(glm::mat4(1.f), veh.position)
-                        * glm::rotate(glm::mat4(1.f), h, glm::vec3{0,1,0});
-
     // Ground
     push(glm::mat4(1.f));
     drawSlice(ground_);
 
-    // Body (position is the CG, already in veh.position)
-    push(glm::translate(glm::mat4(1.f), veh.position)
-       * glm::rotate(glm::mat4(1.f), veh.heading, glm::vec3{0,1,0}));
+    // Body (with heading, pitch, roll)
+    glm::mat4 bodyM = glm::translate(glm::mat4(1.f), veh.position)
+        * glm::rotate(glm::mat4(1.f), veh.heading, glm::vec3{0,1,0})
+        * glm::rotate(glm::mat4(1.f), veh.pitch,   glm::vec3{1,0,0})
+        * glm::rotate(glm::mat4(1.f), veh.roll,    glm::vec3{0,0,1});
+    push(bodyM);
     drawSlice(body_);
 
-    // 4 wheels (world positions from physics)
+    // 4 tire + rim combos + axles from mount to wheel
     for (int i = 0; i < 4; ++i) {
-        push(glm::translate(glm::mat4(1.f), veh.wheelPos[i]));
-        drawSlice(wheel_);
+        glm::mat4 wheelT = glm::translate(glm::mat4(1.f), veh.wheelPos[i]);
+        push(wheelT);
+        drawSlice(tire_);
+        push(wheelT);
+        drawSlice(rim_);
+
+        // Axle: thin cylinder from mountPos to wheelPos
+        glm::vec3 mp = veh.mountPos[i];
+        glm::vec3 wp = veh.wheelPos[i];
+        glm::vec3 diff = wp - mp;
+        float len = glm::length(diff);
+        if (len > 0.001f) {
+            glm::vec3 mid = (mp + wp) * 0.5f;
+            glm::vec3 dir = diff / len;
+            // Axle template is along X axis, half-length=0.5 => total=1.0
+            // We need to rotate X-axis to point along 'dir' and scale to 'len'
+            // Build a rotation that takes (1,0,0) to 'dir'
+            glm::vec3 up{0,1,0};
+            glm::vec3 right = glm::normalize(glm::cross(up, dir));
+            glm::vec3 realUp = glm::cross(dir, right);
+            glm::mat4 axleM = glm::translate(glm::mat4(1.f), mid);
+            // Column-major rotation: col0=dir, col1=realUp, col2=right scaled by len
+            axleM[0] = glm::vec4(dir * len, 0.f);
+            axleM[1] = glm::vec4(realUp, 0.f);
+            axleM[2] = glm::vec4(right, 0.f);
+            push(axleM);
+            drawSlice(axle_);
+        }
+    }
+
+    // Bumps
+    for (auto& b : bumps) {
+        float halfX = (b.xMax - b.xMin) * 0.5f;
+        float centerX = (b.xMax + b.xMin) * 0.5f;
+        bool wide = halfX > 1.f;
+        glm::mat4 bumpT = glm::translate(glm::mat4(1.f),
+            glm::vec3{centerX, b.height * 0.5f, b.zCenter});
+        push(bumpT);
+        drawSlice(wide ? bumpWide_ : bumpNarrow_);
     }
 }
 
-void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& veh)
+void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudData& hud)
+{
+    // Build HUD geometry in screen-space pixels
+    VList hudV;
+    IList hudI;
+
+    float fw = (float)W;
+    float fh = (float)H;
+
+    // --- Scenario buttons along the top ---
+    float totalBtnW = hud.numScenarios * BTN_W + (hud.numScenarios - 1) * BTN_GAP;
+    float btnX0 = (fw - totalBtnW) * 0.5f;
+
+    for (int i = 0; i < hud.numScenarios; ++i) {
+        float bx = btnX0 + i * (BTN_W + BTN_GAP);
+        bool active = (i == hud.activeScenario);
+
+        // Button background
+        glm::vec4 bgCol = active ? glm::vec4{0.3f, 0.55f, 0.8f, 1.f}
+                                 : glm::vec4{0.25f, 0.25f, 0.30f, 1.f};
+        buildRect(bx, BTN_Y, BTN_W, BTN_H, bgCol, hudV, hudI);
+
+        // Button text
+        glm::vec4 txtCol = active ? glm::vec4{1.f, 1.f, 1.f, 1.f}
+                                  : glm::vec4{0.7f, 0.7f, 0.7f, 1.f};
+        if (hud.scenarioNames && hud.scenarioNames[i]) {
+            // Center text in button
+            const char* name = hud.scenarioNames[i];
+            int len = 0; for (const char* p = name; *p; ++p) ++len;
+            float textW = len * 6.f * 2.f;
+            float tx = bx + (BTN_W - textW) * 0.5f;
+            float ty = BTN_Y + (BTN_H - 7.f * 2.f) * 0.5f;
+            buildText(name, tx, ty, 2.f, txtCol, hudV, hudI);
+        }
+    }
+
+    // --- Speedometer (bottom-right area) ---
+    {
+        float panelX = fw - 200.f;
+        float panelY = fh - 70.f;
+
+        // "KM/H" label
+        buildText("KM/H", panelX + 110.f, panelY + 4.f, 2.f,
+                  {0.8f, 0.8f, 0.8f, 1.f}, hudV, hudI);
+
+        // Speed number (large)
+        char speedStr[16];
+        int spd = (int)(std::abs(hud.speedKmh) + 0.5f);
+        std::snprintf(speedStr, sizeof(speedStr), "%3d", spd);
+        buildText(speedStr, panelX, panelY - 4.f, 4.f,
+                  {1.f, 1.f, 1.f, 1.f}, hudV, hudI);
+    }
+
+    // --- RPM bar ---
+    {
+        float barX = fw - 200.f;
+        float barY = fh - 30.f;
+        float barW = 190.f;
+        float barH = 14.f;
+
+        // Background
+        buildRect(barX, barY, barW, barH, {0.15f, 0.15f, 0.15f, 1.f}, hudV, hudI);
+
+        // Fill
+        float frac = std::clamp(hud.rpm / hud.rpmLimit, 0.f, 1.f);
+        glm::vec4 barCol = (frac < 0.7f) ? glm::vec4{0.2f, 0.7f, 0.3f, 1.f}
+                         : (frac < 0.9f) ? glm::vec4{0.9f, 0.8f, 0.1f, 1.f}
+                                         : glm::vec4{0.9f, 0.2f, 0.1f, 1.f};
+        if (frac > 0.01f)
+            buildRect(barX + 2, barY + 2, (barW - 4) * frac, barH - 4, barCol, hudV, hudI);
+
+        // "RPM" label
+        buildText("RPM", barX + barW + 4.f, barY + 1.f, 2.f,
+                  {0.8f, 0.8f, 0.8f, 1.f}, hudV, hudI);
+    }
+
+    if (hudV.empty()) return;
+
+    // Upload HUD geometry
+    {
+        VkDeviceSize vSz = hudV.size() * sizeof(Vertex);
+        void* p; vkMapMemory(dev_, hudVmem_, 0, vSz, 0, &p);
+        std::memcpy(p, hudV.data(), vSz);
+        vkUnmapMemory(dev_, hudVmem_);
+    }
+    {
+        VkDeviceSize iSz = hudI.size() * sizeof(uint32_t);
+        void* p; vkMapMemory(dev_, hudImem_, 0, iSz, 0, &p);
+        std::memcpy(p, hudI.data(), iSz);
+        vkUnmapMemory(dev_, hudImem_);
+    }
+
+    // Set full-screen viewport
+    VkViewport vp{};
+    vp.width    = fw;
+    vp.height   = fh;
+    vp.minDepth = 0.f;
+    vp.maxDepth = 1.f;
+    vkCmdSetViewport(cmd, 0, 1, &vp);
+
+    VkRect2D sc{};
+    sc.extent = { W, H };
+    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+    // Ortho projection: (0,0) top-left, (W,H) bottom-right
+    // In Vulkan clip space, Y=-1 is top and Y=+1 is bottom.
+    // glm::ortho(0,W,0,H) maps Y=0 to -1 (top) and Y=H to +1 (bottom).
+    // No Y-flip needed — this IS screen coordinates for Vulkan.
+    glm::mat4 ortho = glm::ortho(0.f, fw, 0.f, fh, -1.f, 1.f);
+    // Remap depth [-1,1] to [0,1]
+    for (int col = 0; col < 4; ++col)
+        ortho[col][2] = 0.5f * ortho[col][2] + 0.5f * ortho[col][3];
+
+    PushConst pc{ ortho, glm::mat4(1.f) };
+    vkCmdPushConstants(cmd, layout_, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &hudVbuf_, &off);
+    vkCmdBindIndexBuffer(cmd, hudIbuf_, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, (uint32_t)hudI.size(), 1, 0, 0, 0);
+}
+
+void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
+                    const Vehicle& veh, const HudData& hud,
+                    const std::vector<Bump>& bumps)
 {
     VkDeviceSize off = 0;
 
+    // Reserve a strip at the top for HUD buttons
+    constexpr uint32_t HUD_STRIP = 40;
     uint32_t hw = W / 2;
-    uint32_t hh = H / 2;
+    uint32_t viewH = H - HUD_STRIP;
+    uint32_t hh = viewH / 2;
     constexpr uint32_t GAP = 2;
 
     float h     = veh.heading;
@@ -369,9 +722,7 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
     glm::vec3 fwd   { std::sin(h), 0.f, std::cos(h) };
     glm::vec3 right { std::cos(h), 0.f, -std::sin(h) };
 
-    // Vulkan projection wrappers: Y-flip + remap depth from [-1,1] to [0,1]
     auto fixDepth = [](glm::mat4& p) {
-        // Maps clip Z from [-1,1] (OpenGL) to [0,1] (Vulkan)
         for (int col = 0; col < 4; ++col)
             p[col][2] = 0.5f * p[col][2] + 0.5f * p[col][3];
     };
@@ -388,44 +739,40 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
         return p;
     };
 
-    float range = 3.5f;  // tight framing around the car
+    float range = 3.5f;
     float aspQ  = (float)(hw - GAP) / (float)(hh - GAP);
 
     struct Quad { uint32_t x, y, w, h; glm::mat4 vp; };
     Quad quads[4];
 
-    // Top-left: BEHIND view (ortho)
-    quads[0] = { 0, 0, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range*0.3f, range*1.0f, 0.1f, 100.f) *
-        glm::lookAt(pos - fwd * 10.f + glm::vec3{0, 1.f, 0},
-                     pos + glm::vec3{0, 0.4f, 0},
-                     glm::vec3{0, 1, 0})
+    glm::vec3 lookTarget = pos + glm::vec3{0, 0.3f, 0};
+
+    // Top-left: BEHIND view (below HUD strip)
+    quads[0] = { 0, HUD_STRIP, hw - GAP, hh - GAP,
+        vkOrtho(-range*aspQ, range*aspQ, -range*0.6f, range*1.0f, 0.1f, 100.f) *
+        glm::lookAt(pos - fwd * 10.f + glm::vec3{0, 3.f, 0},
+                     lookTarget, glm::vec3{0, 1, 0})
     };
 
-    // Top-right: SIDE view (ortho)
-    quads[1] = { hw + GAP, 0, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range*0.3f, range*1.0f, 0.1f, 100.f) *
-        glm::lookAt(pos + right * 10.f + glm::vec3{0, 1.f, 0},
-                     pos + glm::vec3{0, 0.4f, 0},
-                     glm::vec3{0, 1, 0})
+    // Top-right: SIDE view
+    quads[1] = { hw + GAP, HUD_STRIP, hw - GAP, hh - GAP,
+        vkOrtho(-range*aspQ, range*aspQ, -range*0.6f, range*1.0f, 0.1f, 100.f) *
+        glm::lookAt(pos + right * 10.f + glm::vec3{0, 3.f, 0},
+                     lookTarget, glm::vec3{0, 1, 0})
     };
 
-    // Bottom-left: TOP view (ortho)
-    quads[2] = { 0, hh + GAP, hw - GAP, hh - GAP,
+    // Bottom-left: TOP view
+    quads[2] = { 0, HUD_STRIP + hh + GAP, hw - GAP, hh - GAP,
         vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
-        glm::lookAt(pos + glm::vec3{0, 50.f, 0},
-                     pos,
-                     fwd)
+        glm::lookAt(pos + glm::vec3{0, 50.f, 0}, pos, fwd)
     };
 
-    // Bottom-right: PERSPECTIVE (45° behind/beside/above)
+    // Bottom-right: PERSPECTIVE
     {
         glm::vec3 camOff = glm::normalize(-fwd + right + glm::vec3{0,1,0}) * 6.f;
-        quads[3] = { hw + GAP, hh + GAP, hw - GAP, hh - GAP,
+        quads[3] = { hw + GAP, HUD_STRIP + hh + GAP, hw - GAP, hh - GAP,
             vkPersp(glm::radians(45.f), aspQ, 0.1f, 300.f) *
-            glm::lookAt(pos + camOff,
-                         pos + glm::vec3{0, 0.3f, 0},
-                         glm::vec3{0, 1, 0})
+            glm::lookAt(pos + camOff, lookTarget, glm::vec3{0, 1, 0})
         };
     }
 
@@ -452,14 +799,39 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H, const Vehicle& 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &off);
         vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
-        drawScene(cmd, q.vp, veh);
+        drawScene(cmd, q.vp, veh, bumps);
     }
+
+    // HUD overlay (full-screen, on top of everything)
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+    drawHud(cmd, W, H, hud);
+}
+
+int Renderer::hitTestButton(int mouseX, int mouseY, uint32_t W, uint32_t /*H*/,
+                            int numScenarios) const
+{
+    float fw = (float)W;
+    float totalBtnW = numScenarios * BTN_W + (numScenarios - 1) * BTN_GAP;
+    float btnX0 = (fw - totalBtnW) * 0.5f;
+
+    for (int i = 0; i < numScenarios; ++i) {
+        float bx = btnX0 + i * (BTN_W + BTN_GAP);
+        if (mouseX >= bx && mouseX <= bx + BTN_W &&
+            mouseY >= BTN_Y && mouseY <= BTN_Y + BTN_H) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 // ---- shutdown --------------------------------------------------------------
 
 void Renderer::shutdown(VkDevice dev)
 {
+    vkDestroyBuffer(dev, hudIbuf_, nullptr);
+    vkFreeMemory   (dev, hudImem_, nullptr);
+    vkDestroyBuffer(dev, hudVbuf_, nullptr);
+    vkFreeMemory   (dev, hudVmem_, nullptr);
     vkDestroyBuffer(dev, ibuf_, nullptr);
     vkFreeMemory   (dev, imem_, nullptr);
     vkDestroyBuffer(dev, vbuf_, nullptr);
