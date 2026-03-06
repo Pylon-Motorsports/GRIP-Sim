@@ -15,6 +15,7 @@
 #include "rendering/VulkanRoadRenderer.h"
 #include "vehicle/MultiBodyVehicle.h"
 #include "vehicle/MultiBodyParams.h"
+#include "vehicle/CubeVehicle.h"
 #include "input/SdlInputProvider.h"
 #include "pacenote/GripPaceNoteGenerator.h"
 #include "pacenote/ConsolePaceNoteReader.h"
@@ -38,8 +39,11 @@ int main(int /*argc*/, char* /*argv*/[])
         std::make_shared<SdlInputProvider>());
 
     // --- Vehicle dynamics ---
+    // MultiBodyVehicle: full 4-wheel physics (uncomment to switch back)
+    // registry.bind<IVehicleDynamics>(
+    //     std::make_shared<MultiBodyVehicle>(MultiBodyParams{}));
     registry.bind<IVehicleDynamics>(
-        std::make_shared<MultiBodyVehicle>(MultiBodyParams{}));
+        std::make_shared<CubeVehicle>());
 
     // --- Rendering ---
     registry.bind<IRoadRenderer>(
