@@ -8,6 +8,7 @@ struct Vehicle {
     float     roll     { 0.f };            // radians, positive = right side down
     glm::vec3 wheelPos[4]{};               // world positions of wheel/tire centers
     glm::vec3 mountPos[4]{};               // world positions of suspension mount points
+    float     frontSteerAngle { 0.f };     // front wheel steering angle (radians)
 
     // Body (box)
     static constexpr float BODY_HALF_W = 0.30f;   // 0.60 m wide

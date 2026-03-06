@@ -192,10 +192,9 @@ void VehiclePhysics::update(float dt, const InputState& input)
     // --- Angular damping (prevents oscillation) ---
     constexpr float PITCH_DAMP = 800.f;  // N·m·s/rad
     constexpr float ROLL_DAMP  = 600.f;
-    constexpr float YAW_DAMP   = 50.f;   // light — tires provide most yaw damping naturally
     bodyTorque.x -= PITCH_DAMP * pitchRate_;
     bodyTorque.z -= ROLL_DAMP  * rollRate_;
-    yawTorque    -= YAW_DAMP   * yawRate_;
+    // No explicit yaw damping — rear tire slip angles provide natural yaw stability.
 
     // --- Integrate linear ---
     float mass = totalMass();
@@ -231,6 +230,7 @@ void VehiclePhysics::fillVehicle(Vehicle& veh) const
     veh.heading  = heading_;
     veh.pitch    = pitch_;
     veh.roll     = roll_;
+    veh.frontSteerAngle = front_.steerAngle;
     for (int i = 0; i < 4; ++i) {
         veh.wheelPos[i] = wheelWorldPos(i);
         veh.mountPos[i] = mountWorldPos(i);

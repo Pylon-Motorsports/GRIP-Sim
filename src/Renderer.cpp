@@ -592,7 +592,12 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
 
     // 4 tire + rim combos + axles from mount to wheel
     for (int i = 0; i < 4; ++i) {
+        // Front wheels rotate about Y by steering angle
         glm::mat4 wheelT = glm::translate(glm::mat4(1.f), veh.wheelPos[i]);
+        if (i < 2)
+            wheelT = wheelT * glm::rotate(glm::mat4(1.f), veh.heading + veh.frontSteerAngle, glm::vec3{0,1,0});
+        else
+            wheelT = wheelT * glm::rotate(glm::mat4(1.f), veh.heading, glm::vec3{0,1,0});
         push(wheelT);
         drawSlice(tire_);
         push(wheelT);
