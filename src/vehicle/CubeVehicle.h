@@ -5,24 +5,17 @@
 #include <glm/glm.hpp>
 #include <vector>
 
-/// Minimal cube vehicle: rigid body box that slides on the ground.
-/// No wheels, no suspension, no drivetrain — just gravity, ground contact,
-/// tree collision, and input-driven forces.
-///
-/// Used to validate the modular architecture and as a starting point for
-/// building up physics incrementally.
+/// Bare-metal vehicle: a body and 4 wheels. No physics whatsoever.
+/// Inputs are not connected to any output. Build up from here.
 class CubeVehicle : public IVehicleDynamics {
 public:
     struct Params {
         float massKg       { 1200.f };
-        float halfWidth    { 0.9f };    ///< Half-width (X)
-        float halfLength   { 2.0f };    ///< Half-length (Z)
-        float halfHeight   { 0.7f };    ///< Half-height (Y) — bottom to CG
-        float maxForceN    { 8000.f };  ///< Throttle force
-        float maxBrakeN    { 15000.f }; ///< Brake force
-        float maxSteerRad  { 0.6f };    ///< Max yaw rate per unit steer (rad/s)
-        float dragCoeff    { 0.5f };    ///< Simple velocity drag
-        float frictionMu   { 0.8f };    ///< Ground friction coefficient
+        float halfTrackM   { 0.75f };   ///< Half-track width (CG to wheel, X)
+        float frontAxleM   { 1.3f };    ///< CG to front axle (Z)
+        float rearAxleM    { 1.4f };    ///< CG to rear axle (Z)
+        float cgHeightM    { 0.45f };   ///< CG height above ground (Y)
+        float wheelRadiusM { 0.32f };   ///< Wheel radius
     };
 
     explicit CubeVehicle(Params params = {});
@@ -44,14 +37,13 @@ private:
     std::vector<TreeInstance> trees_;
 
     glm::vec3 pos_  { 0.f };
-    glm::vec3 vel_  { 0.f };
     float     yaw_  { 0.f };
-    float     yawRate_ { 0.f };
 
     // Segment tracking
     std::vector<glm::vec3> centerline_;
     std::vector<uint32_t>  segmentStartVertex_;
     int                    vertsPerRow_ { 7 };
 
+    void updateWheelPositions();
     void updateSegmentTracking();
 };

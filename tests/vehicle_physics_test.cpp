@@ -688,18 +688,18 @@ static void testBrakingDistance()
     auto v = makeVehicle();
     v->reset({0.f, 0.f, 0.f}, 0.f);
 
-    // Accelerate to a known speed
+    // Accelerate to a known speed (bail after 30s)
     InputFrame throttle{}; throttle.throttle = 1.0f;
     constexpr float DT = 1.f / 120.f;
-    while (v->state().speedMs < 27.8f) // ~100 km/h
+    for (int i = 0; i < 3600 && v->state().speedMs < 27.8f; ++i)
         v->integrate(throttle, DT);
 
     float v0 = v->state().speedMs;
     float z0 = v->state().position.z;
 
-    // Full braking
+    // Full braking (bail after 30s)
     InputFrame brake{}; brake.brake = 1.0f;
-    while (v->state().speedMs > 0.5f)
+    for (int i = 0; i < 3600 && v->state().speedMs > 0.5f; ++i)
         v->integrate(brake, DT);
 
     float zStop = v->state().position.z;
