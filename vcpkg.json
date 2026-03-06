@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "grip-sim",
+  "version": "0.1.0",
+  "description": "Optional: install these via vcpkg if you prefer system packages over FetchContent.",
+  "dependencies": [
+    "sdl2"
+  ]
+}

@@ -1,0 +1,7 @@
+build/
+.cache/
+*.spv
+CMakeUserPresets.json
+.vs/
+.vscode/
+out/
