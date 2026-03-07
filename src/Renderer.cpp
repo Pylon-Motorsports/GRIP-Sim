@@ -348,7 +348,8 @@ static void buildWorldText(const char* str, glm::vec3 origin, float heading,
     float sn = std::sin(heading);
     // Text right = along heading direction in XZ
     glm::vec3 right{cs, 0.f, sn};
-    glm::vec3 fwd{-sn, 0.f, cs};  // perpendicular in XZ (text "down" = forward)
+    // Rows go in -fwd so text reads correctly from above (top-down view)
+    glm::vec3 fwd{sn, 0.f, -cs};
 
     float cx = 0.f;
     for (const char* p = str; *p; ++p) {
