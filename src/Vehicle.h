@@ -25,8 +25,8 @@ struct Vehicle {
 
     // Wheels (rim — visual only)
     static constexpr float HALF_TRACK   = 0.75f;  // CG to wheel center (X)
-    static constexpr float FRONT_AXLE   = 1.00f;  // CG to front axle (Z), CG forward of center
-    static constexpr float REAR_AXLE    = 1.20f;  // CG to rear axle (Z), longer arm = more restoring torque
+    static constexpr float FRONT_AXLE   = 1.03f;  // CG to front axle (Z) — ~53% front weight
+    static constexpr float REAR_AXLE    = 0.97f;  // CG to rear axle (Z) — wheelbase 2.00m
     static constexpr float WHEEL_RADIUS = 0.30f;  // tire outer radius (physics)
     static constexpr float WHEEL_HALF_W = 0.10f;  // tire half-width
 
