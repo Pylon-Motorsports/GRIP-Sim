@@ -20,15 +20,17 @@ void main()
     }
 
     vec3 col;
-    if (fragColor.a < 0.5) {
-        // Ground checkerboard (2m squares)
+    float alpha = fragColor.a;
+    if (fragColor.a < 0.01) {
+        // Ground checkerboard (2m squares) — alpha=0 is the ground flag
         float cx = floor(fragWorldPos.x * 0.5);
         float cz = floor(fragWorldPos.z * 0.5);
         float check = mod(cx + cz, 2.0);
         col = mix(vec3(0.32, 0.38, 0.26), vec3(0.45, 0.50, 0.35), check);
+        alpha = 1.0;
     } else {
         col = fragColor.rgb;
     }
 
-    outColor = vec4(col * light, 1.0);
+    outColor = vec4(col * light, alpha);
 }

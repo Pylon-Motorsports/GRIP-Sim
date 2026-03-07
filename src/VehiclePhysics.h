@@ -26,6 +26,7 @@ public:
     float getForwardSpeed()   const { return forwardSpeed_; }
     float getEngineRpm()      const { return engine_.rpm; }
     float getEngineRpmLimit() const { return engine_.rpmLimit; }
+    int   getGear()           const { return engine_.getGear(); }
     float getHeading()        const { return heading_; }
 
     // Speedometer: average speed from front (non-driven) wheels
@@ -58,22 +59,24 @@ private:
     // Steering
     static constexpr float MAX_STEER_ANGLE = 0.61f;   // ~35 degrees
     static constexpr float STEER_DEADZONE  = 0.05f;
+    static constexpr float MAX_STEER_RATE  = 2.5f;    // rad/s at the wheels (steering rack limit)
+
+    // Brakes: pedal [0,1] → hydraulic pressure (Pa), biased front/rear
+    static constexpr float MAX_BRAKE_PRESSURE = 4.0e6f;  // 40 bar
+    static constexpr float BRAKE_BIAS_FRONT   = 0.60f;   // 60% front, 40% rear
 
     // Drivetrain
     Engine     engine_;
     Wheel      wheels_[4];
     Subframe   front_;   // wheels 0 (left), 1 (right)
     Subframe   rear_;    // wheels 2 (left), 3 (right)
+
     // Active bump list (owned externally)
     const std::vector<Bump>* bumps_ = nullptr;
 
-    float wheelGroundY(int i) const;
-    glm::vec3 wheelWorldPos(int i) const;
-    glm::vec3 mountWorldPos(int i) const;
-    glm::vec3 rotateByBody(const glm::vec3& v) const;
-    glm::vec3 forwardDir() const;
-    glm::vec3 rightDir() const;
-    float     totalMass() const;
+    // Build a BodyState snapshot for passing to subframes
+    BodyState buildBodyState(float lateralSpeed) const;
 
+    float totalMass() const;
     static float applyDeadzone(float value, float deadzone);
 };

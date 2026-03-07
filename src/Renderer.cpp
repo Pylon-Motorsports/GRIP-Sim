@@ -337,6 +337,51 @@ static void buildRect(float x, float y, float w, float h, glm::vec4 col,
     idx.insert(idx.end(), {b, b+1, b+2, b, b+2, b+3});
 }
 
+// Build 3D world-space text lying flat on the ground (facing up, readable from above).
+// Each pixel becomes a small quad on the XZ plane at the given Y height.
+// Text flows along +X, with heading rotation around Y.
+static void buildWorldText(const char* str, glm::vec3 origin, float heading,
+                           float pixelSize, glm::vec4 col, VList& verts, IList& idx)
+{
+    glm::vec3 N{0.f, 1.f, 0.f};  // ground normal (up)
+    float cs = std::cos(heading);
+    float sn = std::sin(heading);
+    // Text right = along heading direction in XZ
+    glm::vec3 right{cs, 0.f, sn};
+    glm::vec3 fwd{-sn, 0.f, cs};  // perpendicular in XZ (text "down" = forward)
+
+    float cx = 0.f;
+    for (const char* p = str; *p; ++p) {
+        int ch = (int)(unsigned char)*p;
+        if (ch < 32 || ch > 90) {
+            if (ch >= 'a' && ch <= 'z') ch = ch - 'a' + 'A';
+            else { cx += 6.f * pixelSize; continue; }
+        }
+        int gi = ch - 32;
+        for (int row = 0; row < 7; ++row) {
+            uint8_t bits = FONT_5x7[gi][row];
+            for (int col_i = 0; col_i < 5; ++col_i) {
+                if (bits & (0x10 >> col_i)) {
+                    float lx = cx + col_i * pixelSize;
+                    float lz = row * pixelSize;
+                    // 4 corners of the pixel quad in world space
+                    glm::vec3 p0 = origin + right * lx + fwd * lz;
+                    glm::vec3 p1 = origin + right * (lx + pixelSize) + fwd * lz;
+                    glm::vec3 p2 = origin + right * (lx + pixelSize) + fwd * (lz + pixelSize);
+                    glm::vec3 p3 = origin + right * lx + fwd * (lz + pixelSize);
+                    uint32_t b = (uint32_t)verts.size();
+                    verts.push_back({p0, N, col});
+                    verts.push_back({p1, N, col});
+                    verts.push_back({p2, N, col});
+                    verts.push_back({p3, N, col});
+                    idx.insert(idx.end(), {b, b+1, b+2, b, b+2, b+3});
+                }
+            }
+        }
+        cx += 6.f * pixelSize;
+    }
+}
+
 // ---- init ------------------------------------------------------------------
 
 bool Renderer::init(const VulkanContext& ctx)
@@ -408,6 +453,13 @@ bool Renderer::init(const VulkanContext& ctx)
 
     VkPipelineColorBlendAttachmentState cba{};
     cba.colorWriteMask = 0xF;
+    cba.blendEnable         = VK_TRUE;
+    cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    cba.colorBlendOp        = VK_BLEND_OP_ADD;
+    cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    cba.alphaBlendOp        = VK_BLEND_OP_ADD;
 
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1;
@@ -433,6 +485,11 @@ bool Renderer::init(const VulkanContext& ctx)
     gp.renderPass          = ctx.renderPass;
 
     vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &pipeline_);
+
+    // Translucent pipeline: same as main but depth write OFF
+    ds.depthWriteEnable = VK_FALSE;
+    vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &translucentPipe_);
+    ds.depthWriteEnable = VK_TRUE;  // restore
 
     vkDestroyShaderModule(dev, fragMod, nullptr);
     vkDestroyShaderModule(dev, vertMod, nullptr);
@@ -501,11 +558,11 @@ bool Renderer::init(const VulkanContext& ctx)
         return { iOff, (uint32_t)allI.size() - iOff };
     };
 
-    ground_ = record([](VList& v, IList& i){ makeGround(100.f, v, i); });
+    ground_ = record([](VList& v, IList& i){ makeGround(600.f, v, i); });
 
-    glm::vec4 bodyCol { 0.25f, 0.55f, 0.30f, 1.f };  // green
-    glm::vec4 rimCol  { 0.90f, 0.92f, 0.95f, 1.f };  // white
-    glm::vec4 tireCol { 0.10f, 0.10f, 0.10f, 1.f };  // black rubber
+    glm::vec4 bodyCol { 0.15f, 0.45f, 0.85f, 0.55f };  // bright blue, translucent
+    glm::vec4 rimCol  { 0.90f, 0.92f, 0.95f, 0.55f };  // white, translucent
+    glm::vec4 tireCol { 0.15f, 0.15f, 0.15f, 0.55f };  // dark rubber, translucent
 
     body_  = record([&](VList& v, IList& i){
         makeBox(Vehicle::BODY_HALF_W, Vehicle::BODY_HALF_H, Vehicle::BODY_HALF_L, bodyCol, v, i);
@@ -518,9 +575,15 @@ bool Renderer::init(const VulkanContext& ctx)
     });
 
     // Axle template: thin cylinder along X, unit length (will be scaled per-axle)
-    glm::vec4 axleCol { 0.4f, 0.4f, 0.45f, 1.f };  // dark steel
+    glm::vec4 axleCol { 0.4f, 0.4f, 0.45f, 0.4f };  // dark steel, translucent
     axle_ = record([&](VList& v, IList& i){
         makeCylinder(0.015f, 0.5f, 8, axleCol, v, i);  // radius=1.5cm, half-length=0.5 (scaled)
+    });
+
+    // Subframe: flat box spanning the width between mount points
+    glm::vec4 sfCol { 0.6f, 0.3f, 0.1f, 0.5f };  // rusty orange, translucent
+    subframe_ = record([&](VList& v, IList& i){
+        makeBox(Vehicle::BODY_HALF_W, 0.02f, 0.08f, sfCol, v, i);
     });
 
     // Cosine-profiled bump: unit template scaled per-instance
@@ -561,6 +624,26 @@ bool Renderer::init(const VulkanContext& ctx)
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
         hudImem_);
 
+    // ---- Tire trail buffers (dynamic, updated each frame) ----
+    trailVbuf_ = ctx.allocBuffer(TRAIL_MAX_VERTS * sizeof(Vertex),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        trailVmem_);
+    trailIbuf_ = ctx.allocBuffer(TRAIL_MAX_IDX * sizeof(uint32_t),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        trailImem_);
+
+    // ---- Ground label buffers (dynamic, updated each frame) ----
+    labelVbuf_ = ctx.allocBuffer(LABEL_MAX_VERTS * sizeof(Vertex),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        labelVmem_);
+    labelIbuf_ = ctx.allocBuffer(LABEL_MAX_IDX * sizeof(uint32_t),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        labelImem_);
+
     std::printf("Meshes: %zu verts, %zu indices\n", allV.size(), allI.size());
     return true;
 }
@@ -568,7 +651,7 @@ bool Renderer::init(const VulkanContext& ctx)
 // ---- draw ------------------------------------------------------------------
 
 void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
-                         const std::vector<Bump>& bumps)
+                         const Playground& playground, bool hasTrails)
 {
     auto push = [&](const glm::mat4& model) {
         PushConst pc{ vp, model };
@@ -578,26 +661,47 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         vkCmdDrawIndexed(cmd, s.idxCount, 1, s.firstIdx, 0, 0);
     };
 
+    // === OPAQUE PASS (depth write ON) ===
+
     // Ground
     push(glm::mat4(1.f));
     drawSlice(ground_);
 
-    // Body (with heading, pitch, roll)
-    glm::mat4 bodyM = glm::translate(glm::mat4(1.f), veh.position)
-        * glm::rotate(glm::mat4(1.f), veh.heading, glm::vec3{0,1,0})
-        * glm::rotate(glm::mat4(1.f), veh.pitch,   glm::vec3{1,0,0})
-        * glm::rotate(glm::mat4(1.f), veh.roll,    glm::vec3{0,0,1});
-    push(bodyM);
-    drawSlice(body_);
+    // Tire trails (on ground)
+    if (hasTrails && trailIdxCount_ > 0) {
+        push(glm::mat4(1.f));
+        VkDeviceSize trailOff = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &trailVbuf_, &trailOff);
+        vkCmdBindIndexBuffer(cmd, trailIbuf_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, trailIdxCount_, 1, 0, 0, 0);
 
-    // 4 tire + rim combos + axles from mount to wheel
+        // Re-bind scene buffers
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &trailOff);
+        vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
+    }
+
+    // Ground labels (on ground, before vehicle so they're under it)
+    if (labelIdxCount_ > 0) {
+        push(glm::mat4(1.f));
+        VkDeviceSize labelOff = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &labelVbuf_, &labelOff);
+        vkCmdBindIndexBuffer(cmd, labelIbuf_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, labelIdxCount_, 1, 0, 0, 0);
+
+        // Re-bind scene buffers
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &labelOff);
+        vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
+    }
+
+    // Wheels, rims, and axles (draw before translucent body so they're visible through it)
     for (int i = 0; i < 4; ++i) {
-        // Front wheels rotate about Y by steering angle
-        glm::mat4 wheelT = glm::translate(glm::mat4(1.f), veh.wheelPos[i]);
-        if (i < 2)
-            wheelT = wheelT * glm::rotate(glm::mat4(1.f), veh.heading + veh.frontSteerAngle, glm::vec3{0,1,0});
-        else
-            wheelT = wheelT * glm::rotate(glm::mat4(1.f), veh.heading, glm::vec3{0,1,0});
+        glm::mat4 wheelRot = glm::mat4(veh.bodyRotation);
+        if (i < 2) {
+            glm::vec3 bodyUp = veh.bodyRotation[1];
+            wheelRot = glm::rotate(wheelRot, veh.frontSteerAngle, bodyUp);
+        }
+        glm::mat4 wheelT = glm::translate(glm::mat4(1.f), veh.wheelPos[i])
+            * wheelRot;
         push(wheelT);
         drawSlice(tire_);
         push(wheelT);
@@ -611,14 +715,10 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         if (len > 0.001f) {
             glm::vec3 mid = (mp + wp) * 0.5f;
             glm::vec3 dir = diff / len;
-            // Axle template is along X axis, half-length=0.5 => total=1.0
-            // We need to rotate X-axis to point along 'dir' and scale to 'len'
-            // Build a rotation that takes (1,0,0) to 'dir'
             glm::vec3 up{0,1,0};
             glm::vec3 right = glm::normalize(glm::cross(up, dir));
             glm::vec3 realUp = glm::cross(dir, right);
             glm::mat4 axleM = glm::translate(glm::mat4(1.f), mid);
-            // Column-major rotation: col0=dir, col1=realUp, col2=right scaled by len
             axleM[0] = glm::vec4(dir * len, 0.f);
             axleM[1] = glm::vec4(realUp, 0.f);
             axleM[2] = glm::vec4(right, 0.f);
@@ -627,9 +727,8 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         }
     }
 
-    // Bumps — cosine mesh scaled to actual dimensions
-    // Mesh Y:[0,1], X:[-1,1], Z:[-1,1] → scale to (halfX, height, halfLength)
-    for (auto& b : bumps) {
+    // Bumps
+    for (auto& b : playground.bumps) {
         float halfX = (b.xMax - b.xMin) * 0.5f;
         float centerX = (b.xMax + b.xMin) * 0.5f;
         glm::mat4 bumpT = glm::translate(glm::mat4(1.f),
@@ -638,6 +737,30 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
             glm::vec3{halfX, b.height, b.halfLength});
         push(bumpT);
         drawSlice(unitBump_);
+    }
+
+    // === TRANSLUCENT PASS (depth write OFF — so wheels/axles show through body) ===
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, translucentPipe_);
+
+    // Body
+    glm::mat4 bodyM = glm::translate(glm::mat4(1.f), veh.position)
+        * glm::mat4(veh.bodyRotation);
+    push(bodyM);
+    drawSlice(body_);
+
+    // Subframes
+    {
+        glm::vec3 fMid = (veh.mountPos[0] + veh.mountPos[1]) * 0.5f;
+        glm::mat4 sfFront = glm::translate(glm::mat4(1.f), fMid)
+            * glm::mat4(veh.bodyRotation);
+        push(sfFront);
+        drawSlice(subframe_);
+
+        glm::vec3 rMid = (veh.mountPos[2] + veh.mountPos[3]) * 0.5f;
+        glm::mat4 sfRear = glm::translate(glm::mat4(1.f), rMid)
+            * glm::mat4(veh.bodyRotation);
+        push(sfRear);
+        drawSlice(subframe_);
     }
 }
 
@@ -650,46 +773,24 @@ void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudDat
     float fw = (float)W;
     float fh = (float)H;
 
-    // --- Scenario buttons along the top ---
-    float totalBtnW = hud.numScenarios * BTN_W + (hud.numScenarios - 1) * BTN_GAP;
-    float btnX0 = (fw - totalBtnW) * 0.5f;
-
-    for (int i = 0; i < hud.numScenarios; ++i) {
-        float bx = btnX0 + i * (BTN_W + BTN_GAP);
-        bool active = (i == hud.activeScenario);
-
-        // Button background
-        glm::vec4 bgCol = active ? glm::vec4{0.3f, 0.55f, 0.8f, 1.f}
-                                 : glm::vec4{0.25f, 0.25f, 0.30f, 1.f};
-        buildRect(bx, BTN_Y, BTN_W, BTN_H, bgCol, hudV, hudI);
-
-        // Button text
-        glm::vec4 txtCol = active ? glm::vec4{1.f, 1.f, 1.f, 1.f}
-                                  : glm::vec4{0.7f, 0.7f, 0.7f, 1.f};
-        if (hud.scenarioNames && hud.scenarioNames[i]) {
-            // Center text in button
-            const char* name = hud.scenarioNames[i];
-            int len = 0; for (const char* p = name; *p; ++p) ++len;
-            float textW = len * 6.f * 2.f;
-            float tx = bx + (BTN_W - textW) * 0.5f;
-            float ty = BTN_Y + (BTN_H - 7.f * 2.f) * 0.5f;
-            buildText(name, tx, ty, 2.f, txtCol, hudV, hudI);
-        }
-    }
-
-    // --- Speedometer (right side of banner strip) ---
+    // --- Speedometer (right side) ---
     {
         char speedStr[16];
         int spd = (int)(std::abs(hud.speedKmh) + 0.5f);
         std::snprintf(speedStr, sizeof(speedStr), "%3d", spd);
-        // Large speed number
         float sx = fw - 190.f;
         buildText(speedStr, sx, 4.f, 3.f, {1.f, 1.f, 1.f, 1.f}, hudV, hudI);
-        // "KM/H" label next to it
         buildText("KM/H", sx + 60.f, 10.f, 2.f, {0.7f, 0.7f, 0.7f, 1.f}, hudV, hudI);
     }
 
-    // --- RPM bar (far right of banner strip) ---
+    // --- Gear indicator ---
+    {
+        char gearStr[8];
+        std::snprintf(gearStr, sizeof(gearStr), "G%d", hud.gear);
+        buildText(gearStr, fw - 120.f, 10.f, 2.f, {0.9f, 0.9f, 0.3f, 1.f}, hudV, hudI);
+    }
+
+    // --- RPM bar ---
     {
         float barX = fw - 190.f;
         float barY = 28.f;
@@ -734,12 +835,7 @@ void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudDat
     sc.extent = { W, H };
     vkCmdSetScissor(cmd, 0, 1, &sc);
 
-    // Ortho projection: (0,0) top-left, (W,H) bottom-right
-    // In Vulkan clip space, Y=-1 is top and Y=+1 is bottom.
-    // glm::ortho(0,W,0,H) maps Y=0 to -1 (top) and Y=H to +1 (bottom).
-    // No Y-flip needed — this IS screen coordinates for Vulkan.
     glm::mat4 ortho = glm::ortho(0.f, fw, 0.f, fh, -1.f, 1.f);
-    // Remap depth [-1,1] to [0,1]
     for (int col = 0; col < 4; ++col)
         ortho[col][2] = 0.5f * ortho[col][2] + 0.5f * ortho[col][3];
 
@@ -754,21 +850,71 @@ void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudDat
 
 void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
                     const Vehicle& veh, const HudData& hud,
-                    const std::vector<Bump>& bumps)
+                    const Playground& playground,
+                    const TrailGeometry* trails)
 {
     VkDeviceSize off = 0;
 
-    // Reserve a strip at the top for HUD buttons
-    constexpr uint32_t HUD_STRIP = 40;
+    // Upload tire trail geometry if provided
+    trailIdxCount_ = 0;
+    if (trails && trails->idxCount > 0 && trails->vertCount > 0) {
+        uint32_t vc = std::min(trails->vertCount, TRAIL_MAX_VERTS);
+        uint32_t ic = std::min(trails->idxCount, TRAIL_MAX_IDX);
+        {
+            VkDeviceSize vSz = vc * sizeof(Vertex);
+            void* p; vkMapMemory(dev_, trailVmem_, 0, vSz, 0, &p);
+            std::memcpy(p, trails->verts, vSz);
+            vkUnmapMemory(dev_, trailVmem_);
+        }
+        {
+            VkDeviceSize iSz = ic * sizeof(uint32_t);
+            void* p; vkMapMemory(dev_, trailImem_, 0, iSz, 0, &p);
+            std::memcpy(p, trails->indices, iSz);
+            vkUnmapMemory(dev_, trailImem_);
+        }
+        trailIdxCount_ = ic;
+    }
+
+    // Build and upload ground label geometry
+    labelIdxCount_ = 0;
+    if (!playground.labels.empty()) {
+        VList labelV;
+        IList labelI;
+        glm::vec4 labelCol{1.f, 1.f, 1.f, 0.9f};  // white, slightly transparent
+        float pixelSize = 0.12f;  // 12cm per pixel — readable from above
+
+        for (auto& lbl : playground.labels) {
+            buildWorldText(lbl.text, lbl.position, lbl.heading, pixelSize, labelCol, labelV, labelI);
+        }
+
+        uint32_t vc = std::min((uint32_t)labelV.size(), LABEL_MAX_VERTS);
+        uint32_t ic = std::min((uint32_t)labelI.size(), LABEL_MAX_IDX);
+        if (vc > 0 && ic > 0) {
+            {
+                VkDeviceSize vSz = vc * sizeof(Vertex);
+                void* p; vkMapMemory(dev_, labelVmem_, 0, vSz, 0, &p);
+                std::memcpy(p, labelV.data(), vSz);
+                vkUnmapMemory(dev_, labelVmem_);
+            }
+            {
+                VkDeviceSize iSz = ic * sizeof(uint32_t);
+                void* p; vkMapMemory(dev_, labelImem_, 0, iSz, 0, &p);
+                std::memcpy(p, labelI.data(), iSz);
+                vkUnmapMemory(dev_, labelImem_);
+            }
+            labelIdxCount_ = ic;
+        }
+    }
+
+    // No HUD strip needed since scenario buttons are gone
     uint32_t hw = W / 2;
-    uint32_t viewH = H - HUD_STRIP;
-    uint32_t hh = viewH / 2;
+    uint32_t hh = H / 2;
     constexpr uint32_t GAP = 2;
 
-    float h     = veh.heading;
     glm::vec3 pos = veh.position;
-    glm::vec3 fwd   { std::sin(h), 0.f, std::cos(h) };
-    glm::vec3 right { std::cos(h), 0.f, -std::sin(h) };
+    glm::vec3 right = veh.bodyRotation[0];
+    glm::vec3 up    = veh.bodyRotation[1];
+    glm::vec3 fwd   = veh.bodyRotation[2];
 
     auto fixDepth = [](glm::mat4& p) {
         for (int col = 0; col < 4; ++col)
@@ -793,34 +939,43 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
     struct Quad { uint32_t x, y, w, h; glm::mat4 vp; };
     Quad quads[4];
 
-    glm::vec3 lookTarget = pos + glm::vec3{0, 0.3f, 0};
+    glm::vec3 lookTarget = pos;
 
-    // Top-left: BEHIND view (below HUD strip)
-    quads[0] = { 0, HUD_STRIP, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range*0.6f, range*1.0f, 0.1f, 100.f) *
-        glm::lookAt(pos - fwd * 10.f + glm::vec3{0, 3.f, 0},
-                     lookTarget, glm::vec3{0, 1, 0})
+    auto fixMirror = [](glm::mat4 vp) {
+        for (int c = 0; c < 4; ++c) vp[c][0] = -vp[c][0];
+        return vp;
+    };
+
+    // Top-left: BEHIND view
+    quads[0] = { 0, 0, hw - GAP, hh - GAP,
+        fixMirror(vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
+        glm::lookAt(pos - fwd * 10.f,
+                     lookTarget, up))
     };
 
     // Top-right: SIDE view
-    quads[1] = { hw + GAP, HUD_STRIP, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range*0.6f, range*1.0f, 0.1f, 100.f) *
-        glm::lookAt(pos + right * 10.f + glm::vec3{0, 3.f, 0},
-                     lookTarget, glm::vec3{0, 1, 0})
+    quads[1] = { hw + GAP, 0, hw - GAP, hh - GAP,
+        fixMirror(vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
+        glm::lookAt(pos + right * 10.f,
+                     lookTarget, up))
     };
 
-    // Bottom-left: TOP view
-    quads[2] = { 0, HUD_STRIP + hh + GAP, hw - GAP, hh - GAP,
-        vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
-        glm::lookAt(pos + glm::vec3{0, 50.f, 0}, pos, fwd)
-    };
+    // Bottom-left: CHASE CAM — low angle behind the car
+    {
+        glm::vec3 chaseCam = pos - fwd * 5.f + glm::vec3{0.f, 1.8f, 0.f};
+        glm::vec3 chaseTgt = pos + fwd * 4.f + glm::vec3{0.f, 0.5f, 0.f};
+        quads[2] = { 0, hh + GAP, hw - GAP, hh - GAP,
+            fixMirror(vkPersp(glm::radians(55.f), aspQ, 0.1f, 500.f) *
+            glm::lookAt(chaseCam, chaseTgt, glm::vec3{0.f, 1.f, 0.f}))
+        };
+    }
 
     // Bottom-right: PERSPECTIVE
     {
-        glm::vec3 camOff = glm::normalize(-fwd + right + glm::vec3{0,1,0}) * 6.f;
-        quads[3] = { hw + GAP, HUD_STRIP + hh + GAP, hw - GAP, hh - GAP,
-            vkPersp(glm::radians(45.f), aspQ, 0.1f, 300.f) *
-            glm::lookAt(pos + camOff, lookTarget, glm::vec3{0, 1, 0})
+        glm::vec3 camOff = glm::normalize(-fwd + right + up) * 6.f;
+        quads[3] = { hw + GAP, hh + GAP, hw - GAP, hh - GAP,
+            fixMirror(vkPersp(glm::radians(45.f), aspQ, 0.1f, 300.f) *
+            glm::lookAt(pos + camOff, lookTarget, up))
         };
     }
 
@@ -847,7 +1002,7 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
         vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &off);
         vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
-        drawScene(cmd, q.vp, veh, bumps);
+        drawScene(cmd, q.vp, veh, playground, trailIdxCount_ > 0);
     }
 
     // HUD overlay (full-screen, on top of everything)
@@ -855,27 +1010,18 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
     drawHud(cmd, W, H, hud);
 }
 
-int Renderer::hitTestButton(int mouseX, int mouseY, uint32_t W, uint32_t /*H*/,
-                            int numScenarios) const
-{
-    float fw = (float)W;
-    float totalBtnW = numScenarios * BTN_W + (numScenarios - 1) * BTN_GAP;
-    float btnX0 = (fw - totalBtnW) * 0.5f;
-
-    for (int i = 0; i < numScenarios; ++i) {
-        float bx = btnX0 + i * (BTN_W + BTN_GAP);
-        if (mouseX >= bx && mouseX <= bx + BTN_W &&
-            mouseY >= BTN_Y && mouseY <= BTN_Y + BTN_H) {
-            return i;
-        }
-    }
-    return -1;
-}
-
 // ---- shutdown --------------------------------------------------------------
 
 void Renderer::shutdown(VkDevice dev)
 {
+    vkDestroyBuffer(dev, labelIbuf_, nullptr);
+    vkFreeMemory   (dev, labelImem_, nullptr);
+    vkDestroyBuffer(dev, labelVbuf_, nullptr);
+    vkFreeMemory   (dev, labelVmem_, nullptr);
+    vkDestroyBuffer(dev, trailIbuf_, nullptr);
+    vkFreeMemory   (dev, trailImem_, nullptr);
+    vkDestroyBuffer(dev, trailVbuf_, nullptr);
+    vkFreeMemory   (dev, trailVmem_, nullptr);
     vkDestroyBuffer(dev, hudIbuf_, nullptr);
     vkFreeMemory   (dev, hudImem_, nullptr);
     vkDestroyBuffer(dev, hudVbuf_, nullptr);
@@ -886,6 +1032,7 @@ void Renderer::shutdown(VkDevice dev)
     vkFreeMemory   (dev, vmem_, nullptr);
     vkDestroyPipeline      (dev, skyPipeline_, nullptr);
     vkDestroyPipelineLayout(dev, skyLayout_,   nullptr);
+    vkDestroyPipeline      (dev, translucentPipe_, nullptr);
     vkDestroyPipeline      (dev, pipeline_, nullptr);
     vkDestroyPipelineLayout(dev, layout_,   nullptr);
 }

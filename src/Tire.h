@@ -40,7 +40,7 @@ public:
     // builds with slip before saturation. Larger patch = higher stiffness
     // = more linear grip range before sliding.
     float slipStiffnessPerArea        = 3.0e6f;  // N / m² / unit_slip (longitudinal)
-    float lateralSlipStiffnessPerArea = 1.5e6f;  // N / m² / rad (lateral, lower → later saturation)
+    float lateralSlipStiffnessPerArea = 1.5e6f;  // N / m² / rad (lateral)
 
     // --- Per-step state (read by external code for HUD, etc.) ---
     float deflection         = 0.f;  // current d (m)

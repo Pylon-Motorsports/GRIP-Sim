@@ -4,6 +4,7 @@
 #include "VehiclePhysics.h"
 #include "Input.h"
 #include "Scenario.h"
+#include "TireTrail.h"
 #include <SDL2/SDL.h>
 #include <cstdio>
 #include <cmath>
@@ -36,25 +37,11 @@ int main(int /*argc*/, char** /*argv*/)
     physics.init();
 
     Vehicle vehicle;
+    TireTrails tireTrails;
 
-    // Scenarios
-    auto scenarios = createScenarios();
-    int activeScenario = 0;
-
-    // Collect scenario name pointers for HUD
-    std::vector<const char*> scenarioNames;
-    for (auto& s : scenarios) scenarioNames.push_back(s.name);
-
-    auto switchScenario = [&](int idx) {
-        if (idx < 0 || idx >= (int)scenarios.size() || idx == activeScenario) return;
-        activeScenario = idx;
-        physics.setBumps(scenarios[idx].bumps.empty() ? nullptr : &scenarios[idx].bumps);
-        physics.reset();
-        std::printf("Scenario: %s\n", scenarios[idx].name);
-    };
-
-    // Start with flat
-    physics.setBumps(nullptr);
+    // Build the playground
+    Playground playground = createPlayground();
+    physics.setBumps(playground.bumps.empty() ? nullptr : &playground.bumps);
 
     // Try to open a game controller
     SDL_GameController* controller = nullptr;
@@ -87,22 +74,10 @@ int main(int /*argc*/, char** /*argv*/)
             if (e.type == SDL_QUIT) running = false;
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) running = false;
 
-            // Scenario switching: keys 1-4
-            if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.sym == SDLK_1) switchScenario(0);
-                if (e.key.keysym.sym == SDLK_2) switchScenario(1);
-                if (e.key.keysym.sym == SDLK_3) switchScenario(2);
-                if (e.key.keysym.sym == SDLK_4) switchScenario(3);
-                if (e.key.keysym.sym == SDLK_5) switchScenario(4);
-            }
-
-            // Mouse click on scenario buttons
-            if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
-                int hit = renderer.hitTestButton(
-                    e.button.x, e.button.y,
-                    ctx.swapExtent.width, ctx.swapExtent.height,
-                    (int)scenarios.size());
-                if (hit >= 0) switchScenario(hit);
+            // Reset vehicle: R key
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r) {
+                physics.reset();
+                tireTrails.clear();
             }
 
             if (e.type == SDL_CONTROLLERDEVICEADDED && !controller) {
@@ -133,7 +108,11 @@ int main(int /*argc*/, char** /*argv*/)
             if (rt > 0.05f) input.throttle = rt;
             if (lt > 0.05f) input.brake    = lt;
             if (std::abs(lx) > 0.05f) input.steer = lx;
+            input.clutchIn = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
         }
+
+        // Keyboard clutch: C key
+        if (keys[SDL_SCANCODE_C]) input.clutchIn = true;
 
         // Fixed-timestep physics
         while (accumulator >= PHYSICS_DT) {
@@ -142,20 +121,29 @@ int main(int /*argc*/, char** /*argv*/)
         }
 
         physics.fillVehicle(vehicle);
+        tireTrails.update(vehicle);
+
+        // Build trail geometry
+        std::vector<Vertex> trailVerts;
+        std::vector<uint32_t> trailIdx;
+        tireTrails.buildGeometry(trailVerts, trailIdx);
+        TrailGeometry trailGeo;
+        trailGeo.verts    = trailVerts.data();
+        trailGeo.vertCount = (uint32_t)trailVerts.size();
+        trailGeo.indices  = trailIdx.data();
+        trailGeo.idxCount = (uint32_t)trailIdx.size();
 
         // Build HUD data
         HudData hud;
-        hud.activeScenario = activeScenario;
-        hud.numScenarios   = (int)scenarios.size();
-        hud.scenarioNames  = scenarioNames.data();
         hud.speedKmh       = std::abs(physics.getFrontWheelSpeed()) * 3.6f;
         hud.rpm            = physics.getEngineRpm();
         hud.rpmLimit       = physics.getEngineRpmLimit();
+        hud.gear           = physics.getGear();
 
         VkCommandBuffer cmd = ctx.beginFrame();
         if (cmd) {
             renderer.draw(cmd, ctx.swapExtent.width, ctx.swapExtent.height,
-                          vehicle, hud, scenarios[activeScenario].bumps);
+                          vehicle, hud, playground, &trailGeo);
             ctx.endFrame();
         }
     }

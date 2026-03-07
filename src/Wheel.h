@@ -28,9 +28,22 @@ public:
     // Rotational state — independent DOF, integrated each step
     float angularVel = 0.f;  // rad/s (positive = forward rolling)
 
+    // Per-step outputs (populated by computeForces, read by external code)
+    float lastSlipRatio = 0.f;
+    float lastSlipAngle = 0.f;
+
     // Brakes and bearing
     float bearingFrictionNm = 2.f;
-    float maxBrakeTorqueNm  = 500.f;
+
+    // Brake caliper: converts hydraulic pressure to clamping torque.
+    // torque = pressure × pistonArea × padFriction × discRadius × 2 (both pads)
+    float brakePistonAreaM2  = 0.0016f;  // 16 cm² per caliper
+    float brakePadMu         = 0.4f;     // pad-to-disc friction
+    float brakeDiscRadiusM   = 0.14f;    // effective radius of disc (m)
+
+    float brakeTorqueFromPressure(float pressurePa) const {
+        return pressurePa * brakePistonAreaM2 * brakePadMu * brakeDiscRadiusM * 2.f;
+    }
 
     // The tire mounted on this wheel
     Tire tire;
@@ -50,11 +63,11 @@ public:
     //   vLong:        velocity along wheel heading (m/s)
     //   vLat:         velocity perpendicular to wheel heading (m/s, positive = right)
     //   driveTorque:  from engine via drivetrain (Nm), 0 for non-driven wheels
-    //   brakePedal:   [0, 1]
+    //   brakePressure: hydraulic line pressure (Pa)
     //   dt:           timestep (s)
     Forces computeForces(float hubY, float hubVelY, float groundY,
                          float vLong, float vLat,
-                         float driveTorque, float brakePedal, float dt)
+                         float driveTorque, float brakePressure, float dt)
     {
         Forces f{};
 
@@ -84,14 +97,17 @@ public:
             return f;
         }
 
-        // 5. Slip ratio
+        // 5. Slip ratio (SAE normalization: bounded to ~[-1, 1])
         float wheelSpeed = angularVel * tire.radius;
         constexpr float slipEps = 0.5f;
-        float denom = std::max(std::abs(vLong), slipEps);
+        float denom = std::max({std::abs(wheelSpeed), std::abs(vLong), slipEps});
         float slipRatio = (wheelSpeed - vLong) / denom;
 
         // 6. Slip angle
         float slipAngle = std::atan2(vLat, std::max(std::abs(vLong), slipEps));
+
+        lastSlipRatio = slipRatio;
+        lastSlipAngle = slipAngle;
 
         // 7. Forces from brush model
         float Fx = tire.computeLongitudinalForce(slipRatio, Fn);
@@ -113,7 +129,7 @@ public:
 
         float unbrakeTorque = driveTorque + bearingTorque + tireReaction;
 
-        float brakeCap = maxBrakeTorqueNm * brakePedal;
+        float brakeCap = brakeTorqueFromPressure(brakePressure);
         float netTorque;
         if (brakeCap > 0.f && std::abs(unbrakeTorque) <= brakeCap
             && std::abs(angularVel) < 1.f)

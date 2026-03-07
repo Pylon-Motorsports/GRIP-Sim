@@ -547,6 +547,135 @@ static void testDeadzoneInput()
           "deadzone prevents turning from tiny steer input");
 }
 
+static void testTurnBrakeReaccelerate()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    // Gas + hard right steer for 2 seconds
+    InputState turnRight{}; turnRight.throttle = 1.f; turnRight.steer = 1.f;
+    simulate(phys, turnRight, 2.f);
+
+    // Full brake to stop
+    InputState brake{}; brake.brake = 1.f;
+    simulate(phys, brake, 3.f);
+
+    // Record position and heading after stop
+    Vehicle stopped;
+    phys.fillVehicle(stopped);
+    float headingAtStop = stopped.heading;
+    glm::vec3 posAtStop = stopped.position;
+
+    // Verify actually stopped
+    CHECK(std::abs(phys.getForwardSpeed()) < 0.5f,
+          "turn-brake: car is nearly stopped");
+
+    // Apply gas with no steer for 2 seconds
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 2.f);
+
+    Vehicle moving;
+    phys.fillVehicle(moving);
+
+    // The car should have moved forward in its heading direction
+    glm::vec3 displacement = moving.position - posAtStop;
+    float distFwd = displacement.x * std::sin(headingAtStop)
+                  + displacement.z * std::cos(headingAtStop);
+    float distLat = displacement.x * std::cos(headingAtStop)
+                  - displacement.z * std::sin(headingAtStop);
+
+    std::printf("  turn-brake-reaccel: fwd=%.3f lat=%.3f heading=%.3f\n",
+                distFwd, distLat, headingAtStop);
+
+    CHECK(distFwd > 1.0f,
+          "turn-brake-reaccel: car moves forward after reaccelerating");
+    CHECK(std::abs(distLat) < distFwd * 0.5f,
+          "turn-brake-reaccel: lateral drift is small relative to forward motion");
+}
+
+static void testHighSpeedTurnBrakeReaccelerate()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    // Build up speed first — 5 seconds of full throttle straight
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 5.f);
+    float speedBeforeTurn = phys.getForwardSpeed();
+    std::printf("  high-speed turn: speed before turn=%.2f m/s\n", speedBeforeTurn);
+
+    // Hard right steer at speed for 2 seconds (still on throttle)
+    InputState turnRight{}; turnRight.throttle = 1.f; turnRight.steer = 1.f;
+    simulate(phys, turnRight, 2.f);
+    float headingAfterTurn = phys.getHeading();
+    std::printf("  high-speed turn: heading after turn=%.3f rad (%.1f deg)\n",
+                headingAfterTurn, headingAfterTurn * 57.2958f);
+
+    // Full brake to stop
+    InputState brake{}; brake.brake = 1.f;
+    simulate(phys, brake, 5.f);
+
+    Vehicle stopped;
+    phys.fillVehicle(stopped);
+    float headingAtStop = stopped.heading;
+    glm::vec3 posAtStop = stopped.position;
+    std::printf("  high-speed turn: heading at stop=%.3f rad (%.1f deg)\n",
+                headingAtStop, headingAtStop * 57.2958f);
+
+    // Apply gas with no steer for 2 seconds
+    InputState gas2{}; gas2.throttle = 1.f;
+    simulate(phys, gas2, 2.f);
+
+    Vehicle moving;
+    phys.fillVehicle(moving);
+
+    glm::vec3 displacement = moving.position - posAtStop;
+    float distFwd = displacement.x * std::sin(headingAtStop)
+                  + displacement.z * std::cos(headingAtStop);
+    float distLat = displacement.x * std::cos(headingAtStop)
+                  - displacement.z * std::sin(headingAtStop);
+
+    std::printf("  high-speed turn: reaccel fwd=%.3f lat=%.3f\n", distFwd, distLat);
+
+    CHECK(std::abs(headingAtStop) < 1.57f,
+          "high-speed turn: car doesn't spin past 90 degrees");
+    CHECK(distFwd > 1.0f,
+          "high-speed turn: car moves forward after reaccelerating");
+    CHECK(std::abs(distLat) < distFwd * 0.5f,
+          "high-speed turn: lateral drift is small relative to forward motion");
+}
+
+static void testContinuousTurnStability()
+{
+    // Hold gas + full steer for 10 seconds — car should NOT spin past 180°
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState turnRight{}; turnRight.throttle = 1.f; turnRight.steer = 1.f;
+    constexpr float DT = 1.f / 120.f;
+    float maxHeading = 0.f;
+    float heading1s = 0.f, heading3s = 0.f, heading5s = 0.f, heading10s = 0.f;
+
+    for (int step = 0; step < (int)(10.f / DT); ++step) {
+        phys.update(DT, turnRight);
+        float h = phys.getHeading();
+        if (std::abs(h) > std::abs(maxHeading)) maxHeading = h;
+        float t = step * DT;
+        if (std::abs(t - 1.f) < DT) heading1s = h;
+        if (std::abs(t - 3.f) < DT) heading3s = h;
+        if (std::abs(t - 5.f) < DT) heading5s = h;
+        if (std::abs(t - 10.f) < DT) heading10s = h;
+    }
+
+    std::printf("  continuous turn: 1s=%.1f° 3s=%.1f° 5s=%.1f° 10s=%.1f° max=%.1f°\n",
+                heading1s * 57.2958f, heading3s * 57.2958f,
+                heading5s * 57.2958f, heading10s * 57.2958f,
+                maxHeading * 57.2958f);
+
+    CHECK(std::abs(maxHeading) < 3.14159f,
+          "continuous turn: car doesn't spin past 180 degrees");
+}
+
 // ============================================================================
 
 int main()
@@ -583,6 +712,9 @@ int main()
     testVehicleTurnsLeft();
     testStraightWithNoSteer();
     testDeadzoneInput();
+    testTurnBrakeReaccelerate();
+    testHighSpeedTurnBrakeReaccelerate();
+    testContinuousTurnStability();
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
