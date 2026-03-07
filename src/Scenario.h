@@ -4,16 +4,18 @@
 #include <cmath>
 
 struct Bump {
-    float zCenter;     // position along Z (driving direction)
-    float halfLength;  // half-extent along Z (bump "width")
+    float xCenter;     // world X of bump center
+    float zCenter;     // world Z of bump center
+    float halfLength;  // half-extent along heading (cosine profile axis)
+    float halfWidth;   // half-extent perpendicular to heading (flat-topped)
     float height;      // peak height (m)
-    float xMin, xMax;  // lateral extent
+    float heading;     // rotation around Y (radians), 0 = bump runs along Z
 };
 
 struct GroundLabel {
     const char* text;
     glm::vec3 position;   // world position (placed on ground)
-    float heading;        // rotation around Y (radians), 0 = text faces +X
+    float heading;        // rotation around Y (radians)
 };
 
 struct Playground {
@@ -21,16 +23,31 @@ struct Playground {
     std::vector<GroundLabel> labels;
 };
 
+// Transform world (x,z) into bump-local coordinates.
+// Local Z = along heading (cosine profile), local X = perpendicular.
+inline void toBumpLocal(const Bump& b, float wx, float wz, float& lx, float& lz)
+{
+    float dx = wx - b.xCenter;
+    float dz = wz - b.zCenter;
+    float cs = std::cos(b.heading);
+    float sn = std::sin(b.heading);
+    // Rotate by -heading
+    lx =  dx * cs + dz * sn;
+    lz = -dx * sn + dz * cs;
+}
+
 // Query ground height at a world point.
-// Uses cosine profile for smooth bump shape.
+// Uses cosine profile along bump's heading direction.
 inline float groundHeight(const std::vector<Bump>& bumps, float x, float z)
 {
     float h = 0.f;
     for (auto& b : bumps) {
-        if (x < b.xMin || x > b.xMax) continue;
-        float dz = std::abs(z - b.zCenter);
-        if (dz >= b.halfLength) continue;
-        float bh = b.height * 0.5f * (1.f + std::cos(3.14159265f * dz / b.halfLength));
+        float lx, lz;
+        toBumpLocal(b, x, z, lx, lz);
+        if (std::abs(lx) > b.halfWidth) continue;
+        float alz = std::abs(lz);
+        if (alz >= b.halfLength) continue;
+        float bh = b.height * 0.5f * (1.f + std::cos(3.14159265f * alz / b.halfLength));
         if (bh > h) h = bh;
     }
     return h;
@@ -40,21 +57,44 @@ inline float groundHeight(const std::vector<Bump>& bumps, float x, float z)
 inline glm::vec3 groundNormal(const std::vector<Bump>& bumps, float x, float z)
 {
     float h = 0.f;
-    float dhdz = 0.f;
+    float dhdlz = 0.f;  // gradient in bump-local Z
+    float bestHeading = 0.f;
     for (auto& b : bumps) {
-        if (x < b.xMin || x > b.xMax) continue;
-        float dz = z - b.zCenter;
-        float adz = std::abs(dz);
-        if (adz >= b.halfLength) continue;
-        float bh = b.height * 0.5f * (1.f + std::cos(3.14159265f * adz / b.halfLength));
+        float lx, lz;
+        toBumpLocal(b, x, z, lx, lz);
+        if (std::abs(lx) > b.halfWidth) continue;
+        float alz = std::abs(lz);
+        if (alz >= b.halfLength) continue;
+        float bh = b.height * 0.5f * (1.f + std::cos(3.14159265f * alz / b.halfLength));
         if (bh > h) {
             h = bh;
-            float sign = (dz >= 0.f) ? 1.f : -1.f;
-            dhdz = -b.height * 0.5f * (3.14159265f / b.halfLength)
-                   * std::sin(3.14159265f * adz / b.halfLength) * sign;
+            float sign = (lz >= 0.f) ? 1.f : -1.f;
+            dhdlz = -b.height * 0.5f * (3.14159265f / b.halfLength)
+                     * std::sin(3.14159265f * alz / b.halfLength) * sign;
+            bestHeading = b.heading;
         }
     }
-    return glm::normalize(glm::vec3{0.f, 1.f, -dhdz});
+    // Rotate gradient back to world space.
+    // In bump-local: normal = (0, 1, -dhdlz). Rotate local Z back to world.
+    float cs = std::cos(bestHeading);
+    float sn = std::sin(bestHeading);
+    // Local Z direction in world = (-sin(h), 0, cos(h))
+    // dh/dworld = dhdlz * localZ_direction
+    float dwx = dhdlz * (-sn);
+    float dwz = dhdlz * cs;
+    return glm::normalize(glm::vec3{-dwx, 1.f, -dwz});
+}
+
+// Helper to make a bump at (r, theta) from origin, oriented radially outward
+inline Bump radialBump(float r, float theta, float halfLen, float halfWid,
+                       float height)
+{
+    return {
+        r * std::sin(theta),  // xCenter
+        r * std::cos(theta),  // zCenter
+        halfLen, halfWid, height,
+        theta                 // heading = radial direction
+    };
 }
 
 inline Playground createPlayground()
@@ -62,171 +102,149 @@ inline Playground createPlayground()
     Playground pg;
     auto& bumps = pg.bumps;
     auto& labels = pg.labels;
+    constexpr float PI = 3.14159265f;
 
-    // Helper: place label at ground level just before each section
-    auto label = [&](const char* text, float z, float x = 0.f) {
-        labels.push_back({text, {x, 0.01f, z}, 0.f});
+    // Helper: label at distance r along angle theta
+    auto label = [&](const char* text, float r, float theta) {
+        float x = r * std::sin(theta);
+        float z = r * std::cos(theta);
+        labels.push_back({text, {x, 0.01f, z}, theta});
     };
 
-    // ===== 1. FLAT — z = 0..30 =============================================
-    label("FLAT", 2.f, -3.f);
-    // No bumps — flat ground for baseline testing
+    // Center label
+    labels.push_back({"START", {0.f, 0.01f, 0.f}, 0.f});
 
-    // ===== 2. SPEED BUMPS — z = 35..100 ====================================
-    label("SPEED BUMPS", 35.f, -3.f);
-    for (int i = 0; i < 8; ++i) {
-        bumps.push_back({
-            40.f + i * 8.f,   // every 8m
-            0.30f,            // 60cm total Z length
-            0.08f,            // 8cm tall
-            -5.f, 5.f         // full width
-        });
+    // ===== 0deg (N, +Z): SPEED BUMPS =======================================
+    {
+        float theta = 0.f;
+        label("SPEED BUMPS", 18.f, theta);
+        for (int i = 0; i < 8; ++i)
+            bumps.push_back(radialBump(25.f + i * 8.f, theta, 0.30f, 4.f, 0.08f));
     }
 
-    // ===== 3. ONE-SIDE BUMPS — z = 105..175 ================================
-    label("ONE-SIDE BUMPS", 105.f, -3.f);
-    for (int i = 0; i < 10; ++i) {
-        bool leftSide = (i % 2 == 0);
-        bumps.push_back({
-            110.f + i * 7.f,
-            0.30f,
-            0.08f,
-            leftSide ? -2.f : 0.f,
-            leftSide ?  0.f : 2.f,
-        });
+    // ===== 45deg (NE): ROLLING HILLS ========================================
+    {
+        float theta = PI * 0.25f;
+        label("ROLLING HILLS", 18.f, theta);
+        for (int i = 0; i < 6; ++i)
+            bumps.push_back(radialBump(30.f + i * 18.f, theta, 9.f, 4.f,
+                            0.35f + 0.25f * std::sin(i * 1.3f)));
     }
 
-    // ===== 4. ROLLING HILLS — z = 180..340 =================================
-    label("ROLLING HILLS", 180.f, -3.f);
-    for (int i = 0; i < 8; ++i) {
-        bumps.push_back({
-            190.f + i * 20.f,
-            10.0f,            // 20m wavelength
-            0.35f + 0.25f * std::sin(i * 1.3f),
-            -5.f, 5.f
-        });
+    // ===== 90deg (E, +X): JUMP ==============================================
+    {
+        float theta = PI * 0.5f;
+        label("JUMP", 18.f, theta);
+        // Takeoff ramp
+        bumps.push_back(radialBump(35.f, theta, 6.f, 3.f, 0.80f));
+        // Landing ramp
+        bumps.push_back(radialBump(55.f, theta, 8.f, 3.f, 0.50f));
+        // Second bigger jump
+        bumps.push_back(radialBump(80.f, theta, 8.f, 3.f, 1.20f));
     }
 
-    // ===== 5. JUMP — z = 350..400 ==========================================
-    label("JUMP", 350.f, -3.f);
-    // Ramp up
-    bumps.push_back({
-        365.f,
-        8.f,                  // 16m ramp
-        0.80f,                // 80cm peak
-        -3.f, 3.f
-    });
-    // Landing slope (negative after gap)
-    bumps.push_back({
-        390.f,
-        6.f,
-        0.40f,
-        -3.f, 3.f
-    });
-
-    // ===== 6. STUTTER BUMPS — z = 410..460 =================================
-    label("STUTTER BUMPS", 410.f, -3.f);
-    for (int i = 0; i < 20; ++i) {
-        bumps.push_back({
-            415.f + i * 2.5f,
-            0.8f,             // 1.6m wavelength
-            0.04f,            // 4cm tall — rapid small bumps
-            -5.f, 5.f
-        });
+    // ===== 135deg (SE): STUTTER BUMPS =======================================
+    {
+        float theta = PI * 0.75f;
+        label("STUTTER BUMPS", 18.f, theta);
+        for (int i = 0; i < 25; ++i)
+            bumps.push_back(radialBump(25.f + i * 2.2f, theta, 0.7f, 4.f, 0.04f));
     }
 
-    // ===== 7. BANKED LEFT — z = 470..540 ===================================
-    label("BANKED LEFT", 470.f, -3.f);
-    // Left side raised, right side flat — simulates left bank
-    for (int i = 0; i < 8; ++i) {
-        bumps.push_back({
-            480.f + i * 8.f,
-            4.0f,
-            0.25f + 0.05f * i,  // increasing bank
-            -5.f, -0.5f         // left half only
-        });
+    // ===== 180deg (S, -Z): MOGULS ===========================================
+    {
+        float theta = PI;
+        label("MOGULS", 18.f, theta);
+        // Staggered bump field — offset bumps left/right of centerline
+        for (int i = 0; i < 8; ++i) {
+            float r = 28.f + i * 8.f;
+            // Three bumps across the width, alternating offset
+            float lateralShift = (i % 2) ? 1.5f : 0.f;
+            for (int j = -1; j <= 1; ++j) {
+                float offX = (j * 3.f + lateralShift);
+                // Place bump at offset perpendicular to radial direction
+                float perpX =  std::cos(theta) * offX;
+                float perpZ = -std::sin(theta) * offX;
+                bumps.push_back({
+                    r * std::sin(theta) + perpX,
+                    r * std::cos(theta) + perpZ,
+                    2.5f, 1.5f,
+                    0.25f + 0.10f * std::sin(i * 1.1f + j * 2.f),
+                    theta
+                });
+            }
+        }
     }
 
-    // ===== 8. BANKED RIGHT — z = 550..620 ==================================
-    label("BANKED RIGHT", 550.f, -3.f);
-    for (int i = 0; i < 8; ++i) {
-        bumps.push_back({
-            560.f + i * 8.f,
-            4.0f,
-            0.25f + 0.05f * i,
-            0.5f, 5.f           // right half only
-        });
+    // ===== 225deg (SW): WASHBOARD ===========================================
+    {
+        float theta = PI * 1.25f;
+        label("WASHBOARD", 18.f, theta);
+        for (int i = 0; i < 30; ++i)
+            bumps.push_back(radialBump(25.f + i * 2.0f, theta, 0.5f, 4.f, 0.03f));
     }
 
-    // ===== 9. BIG HILL — z = 630..720 ======================================
-    label("BIG HILL", 630.f, -3.f);
-    bumps.push_back({
-        675.f,
-        30.f,                   // 60m wavelength — big gentle hill
-        1.5f,                   // 1.5m tall!
-        -5.f, 5.f
-    });
-
-    // ===== 10. QUARTER PIPE — z = 730..770 =================================
-    label("QUARTER PIPE", 730.f, -3.f);
-    // Steep ramp, one side only — wall to ride up
-    bumps.push_back({
-        750.f,
-        6.f,
-        1.2f,                   // 1.2m vertical wall
-        -5.f, -1.f              // left side wall
-    });
-    bumps.push_back({
-        750.f,
-        6.f,
-        1.2f,
-        1.f, 5.f                // right side wall
-    });
-
-    // ===== 11. MOGULS — z = 780..880 =======================================
-    label("MOGULS", 780.f, -3.f);
-    for (int i = 0; i < 10; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            float xOff = -2.f + j * 2.f + ((i % 2) ? 1.f : 0.f);
+    // ===== 270deg (W, -X): HALF PIPE ========================================
+    {
+        float theta = PI * 1.5f;
+        label("HALF PIPE", 18.f, theta);
+        // Two massive walls forming a channel, running radially outward.
+        // Walls are 8m tall, 2m thick, extending 40m along the radial direction.
+        // The cosine profile runs along the heading so walls taper at the ends.
+        // Channel is ~6m wide (walls offset 4m from centerline each side).
+        float wallOffset = 4.f;  // perpendicular distance from centerline
+        // Perpendicular direction
+        float perpX =  std::cos(theta);
+        float perpZ = -std::sin(theta);
+        for (int i = 0; i < 5; ++i) {
+            float r = 25.f + i * 10.f;
+            float cx = r * std::sin(theta);
+            float cz = r * std::cos(theta);
+            // Left wall
             bumps.push_back({
-                790.f + i * 10.f,
-                3.0f,
-                0.20f + 0.08f * std::sin(i * 1.1f + j * 2.f),
-                xOff - 1.f, xOff + 1.f
+                cx + perpX * wallOffset,
+                cz + perpZ * wallOffset,
+                5.f, 2.f, 8.f, theta
+            });
+            // Right wall
+            bumps.push_back({
+                cx - perpX * wallOffset,
+                cz - perpZ * wallOffset,
+                5.f, 2.f, 8.f, theta
             });
         }
     }
 
-    // ===== 12. DOUBLE JUMP — z = 890..950 ==================================
-    label("DOUBLE JUMP", 890.f, -3.f);
-    // First jump
-    bumps.push_back({ 905.f, 6.f, 0.70f, -3.f, 3.f });
-    // Second jump (bigger)
-    bumps.push_back({ 935.f, 8.f, 1.00f, -3.f, 3.f });
-
-    // ===== 13. WASHBOARD — z = 960..1030 ===================================
-    label("WASHBOARD", 960.f, -3.f);
-    for (int i = 0; i < 30; ++i) {
-        bumps.push_back({
-            965.f + i * 2.2f,
-            0.6f,
-            0.03f,             // 3cm — rapid tiny bumps
-            -5.f, 5.f
-        });
+    // ===== 315deg (NW): BANKED TURNS ========================================
+    {
+        float theta = PI * 1.75f;
+        label("BANKED TURNS", 18.f, theta);
+        // Left bank: raise one side progressively
+        float perpX =  std::cos(theta);
+        float perpZ = -std::sin(theta);
+        for (int i = 0; i < 6; ++i) {
+            float r = 28.f + i * 10.f;
+            float cx = r * std::sin(theta);
+            float cz = r * std::cos(theta);
+            // Raise left side
+            bumps.push_back({
+                cx + perpX * 2.5f,
+                cz + perpZ * 2.5f,
+                5.f, 2.5f, 0.20f + 0.08f * i, theta
+            });
+        }
+        // Then right bank
+        for (int i = 0; i < 6; ++i) {
+            float r = 95.f + i * 10.f;
+            float cx = r * std::sin(theta);
+            float cz = r * std::cos(theta);
+            bumps.push_back({
+                cx - perpX * 2.5f,
+                cz - perpZ * 2.5f,
+                5.f, 2.5f, 0.20f + 0.08f * i, theta
+            });
+        }
     }
-
-    // ===== 14. HALF PIPE — z = 1040..1090 ==================================
-    label("HALF PIPE", 1040.f, -3.f);
-    // Both sides raised like a half pipe channel
-    for (int i = 0; i < 6; ++i) {
-        float z = 1050.f + i * 8.f;
-        bumps.push_back({ z, 4.f, 0.80f, -5.f, -1.5f });  // left wall
-        bumps.push_back({ z, 4.f, 0.80f,  1.5f, 5.f  });  // right wall
-    }
-
-    // ===== 15. RUNOUT — z = 1100+ ==========================================
-    label("RUNOUT", 1100.f, -3.f);
-    // Flat — safe braking zone
 
     return pg;
 }

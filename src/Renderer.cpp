@@ -727,14 +727,13 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         }
     }
 
-    // Bumps
+    // Bumps — unit mesh scaled and rotated to actual dimensions
     for (auto& b : playground.bumps) {
-        float halfX = (b.xMax - b.xMin) * 0.5f;
-        float centerX = (b.xMax + b.xMin) * 0.5f;
         glm::mat4 bumpT = glm::translate(glm::mat4(1.f),
-            glm::vec3{centerX, 0.f, b.zCenter})
+            glm::vec3{b.xCenter, 0.f, b.zCenter})
+            * glm::rotate(glm::mat4(1.f), b.heading, glm::vec3{0.f, 1.f, 0.f})
             * glm::scale(glm::mat4(1.f),
-            glm::vec3{halfX, b.height, b.halfLength});
+            glm::vec3{b.halfWidth, b.height, b.halfLength});
         push(bumpT);
         drawSlice(unitBump_);
     }
