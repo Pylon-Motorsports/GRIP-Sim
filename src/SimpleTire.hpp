@@ -10,6 +10,7 @@ public:
     float lateralMuDynamic = 0.95f;  // sliding lateral mu
     float longMuStatic     = 1.2f;   // peak longitudinal mu (matched to lateral)
     float longMuDynamic    = 0.95f;  // sliding longitudinal mu
+    float rollingResistCoeff = 0.015f; // rolling resistance (sport tires on tarmac)
 
     SimpleTire(std::string name, glm::vec3 attachPt, bool steered_, bool driven_);
 

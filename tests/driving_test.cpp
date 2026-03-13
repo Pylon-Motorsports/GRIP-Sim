@@ -538,6 +538,175 @@ static void testFullThrottleAcceleration() {
 }
 
 // ---------------------------------------------------------------------------
+// Skid mark tests — no false skid marks during normal driving
+// ---------------------------------------------------------------------------
+
+static void testNoSkidMarksStraightLine() {
+    std::printf("  testNoSkidMarksStraightLine\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Full throttle in a straight line — should NOT produce skid marks
+    InputState gas{}; gas.throttle = 1.f;
+    WheelInfo wheels[4];
+    getWheels(v, wheels);
+
+    int nonZeroSlipFrames = 0;
+    int totalFrames = 0;
+    for (float elapsed = 0.f; elapsed < 4.f; elapsed += DT) {
+        physicsStep(v, t, gas, prevComp);
+        totalFrames++;
+        for (int i = 0; i < 4; ++i) {
+            float sr = std::abs(wheels[i].corner->tire()->tireOutput().slipRatio);
+            if (sr > 0.05f) nonZeroSlipFrames++;
+        }
+    }
+
+    float pct = 100.f * nonZeroSlipFrames / (totalFrames * 4);
+    std::printf("    non-zero slip ratio: %.1f%% of samples\n", pct);
+    CHECK(pct < 5.f, "no skid marks during straight-line acceleration");
+}
+
+// ---------------------------------------------------------------------------
+// Coasting deceleration — vehicle should slow down without throttle/brake
+// ---------------------------------------------------------------------------
+
+static void testCoastingDecelerates() {
+    std::printf("  testCoastingDecelerates\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Build speed
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(v, t, gas, 4.f, prevComp);
+
+    float speedBefore = forwardSpeed(v);
+    CHECK(speedBefore > 15.f, "moving before coast test");
+
+    // Coast — no throttle, no brake
+    InputState coast{};
+    simulate(v, t, coast, 5.f, prevComp);
+
+    float speedAfter = forwardSpeed(v);
+    float decel = speedBefore - speedAfter;
+    std::printf("    speed: %.1f -> %.1f m/s (lost %.1f)\n",
+        speedBefore, speedAfter, decel);
+    CHECK(decel > 3.f, "coasting loses >3 m/s over 5 seconds");
+}
+
+static void testRollingResistanceSlows() {
+    std::printf("  testRollingResistanceSlows\n");
+    // Rolling resistance acts at all speeds, even low.
+    // A car at ~5 m/s with no drive/brake should decelerate noticeably.
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Build moderate speed
+    InputState gas{}; gas.throttle = 0.3f;
+    simulate(v, t, gas, 3.f, prevComp);
+
+    float speedBefore = forwardSpeed(v);
+    CHECK(speedBefore > 3.f, "moving before rolling resistance test");
+
+    // Coast at low speed — rolling resistance dominates over aero
+    InputState coast{};
+    simulate(v, t, coast, 3.f, prevComp);
+
+    float speedAfter = forwardSpeed(v);
+    std::printf("    speed: %.1f -> %.1f m/s\n", speedBefore, speedAfter);
+    CHECK(speedAfter < speedBefore - 1.f,
+          "rolling resistance slows car at low speed");
+}
+
+static void testEngineBrakingSlows() {
+    std::printf("  testEngineBrakingSlows\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Build speed in low gear
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(v, t, gas, 2.f, prevComp);
+
+    float speedBefore = forwardSpeed(v);
+    int gearBefore = v.drivetrain()->currentGear;
+    CHECK(speedBefore > 8.f, "moving before engine braking test");
+
+    // Release throttle — engine braking should assist deceleration
+    InputState coast{};
+    simulate(v, t, coast, 2.f, prevComp);
+
+    float speedAfter = forwardSpeed(v);
+    float decel = speedBefore - speedAfter;
+    std::printf("    speed: %.1f -> %.1f m/s, gear %d->%d\n",
+        speedBefore, speedAfter, gearBefore, v.drivetrain()->currentGear);
+    CHECK(decel > 2.f, "engine braking contributes to deceleration");
+}
+
+static void testAeroDragIncreasesWithSpeed() {
+    std::printf("  testAeroDragIncreasesWithSpeed\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Build high speed
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(v, t, gas, 6.f, prevComp);
+
+    float highSpeed = forwardSpeed(v);
+    CHECK(highSpeed > 25.f, "reached high speed");
+
+    // Coast from high speed — measure decel over 1 second
+    InputState coast{};
+    float highSpeedBefore = highSpeed;
+    simulate(v, t, coast, 1.f, prevComp);
+    float highDecel = highSpeedBefore - forwardSpeed(v);
+
+    // Compare against coast from lower speed
+    VehiclePhysics v2; v2.init();
+    initOnTerrain(v2, t);
+    float prevComp2[4] = {};
+    simulate(v2, t, idle, 0.5f, prevComp2);
+
+    InputState gas2{}; gas2.throttle = 0.4f;
+    simulate(v2, t, gas2, 3.f, prevComp2);
+
+    float lowSpeed = forwardSpeed(v2);
+    float lowSpeedBefore = lowSpeed;
+    simulate(v2, t, coast, 1.f, prevComp2);
+    float lowDecel = lowSpeedBefore - forwardSpeed(v2);
+
+    std::printf("    high speed (%.0f m/s) decel: %.2f m/s^2\n",
+        highSpeedBefore, highDecel);
+    std::printf("    low speed (%.0f m/s) decel: %.2f m/s^2\n",
+        lowSpeedBefore, lowDecel);
+    CHECK(highDecel > lowDecel, "higher speed = more deceleration (aero drag)");
+}
+
+// ---------------------------------------------------------------------------
 int main() {
     std::printf("Running driving characteristic tests...\n\n");
     std::printf("Equilibrium:\n");
@@ -573,6 +742,15 @@ int main() {
     std::printf("Acceleration grip:\n");
     testHalfThrottleNoSliding();
     testFullThrottleAcceleration();
+
+    std::printf("Skid marks:\n");
+    testNoSkidMarksStraightLine();
+
+    std::printf("Coasting deceleration:\n");
+    testCoastingDecelerates();
+    testRollingResistanceSlows();
+    testEngineBrakingSlows();
+    testAeroDragIncreasesWithSpeed();
 
     return reportResults();
 }

@@ -368,9 +368,12 @@ static void testFrontTireNotDriven() {
     ci.velocity = glm::vec3(0.f, 0.f, 5.f);
 
     auto out = tire->update(ci);
-    // Without drive torque, tire should produce no longitudinal force
-    CHECK(std::abs(out.force.z) < 0.01f,
-          "Tire with no drive torque produces no longitudinal force");
+    // Without drive torque, tire should produce only rolling resistance
+    // (opposing forward motion). At 3000N load, ~45N retarding force.
+    CHECK(out.force.z < 0.f,
+          "Tire with no drive torque: rolling resistance opposes motion");
+    CHECK(std::abs(out.force.z) < 100.f,
+          "Tire with no drive torque: force is small (rolling resistance only)");
 }
 
 // ====================== Controls routing ==================================

@@ -31,17 +31,7 @@ ComponentOutput SimpleTire::compute(const ComponentInput& input) {
     float maxLonStatic = input.normalLoad * longMuStatic * grip;
     float maxLatStatic = input.normalLoad * lateralMuStatic * grip;
 
-    // --- Slip ratio (for reporting / trail rendering) ---
-    float slipRatio = 0.f;
-    if (speed > 0.5f && maxLonStatic > 1.f) {
-        float netLon = driveTorqueNm_ / std::max(radius, 0.01f);
-        if (brakeTorqueNm_ > 0.01f && std::abs(vFwd) > 0.01f) {
-            float bSign = (vFwd > 0.f) ? -1.f : 1.f;
-            netLon += bSign * brakeTorqueNm_ / std::max(radius, 0.01f);
-        }
-        slipRatio = std::clamp(netLon / maxLonStatic, -1.f, 1.f);
-    }
-    tireOutput_.slipRatio = slipRatio;
+    // slipRatio is computed after force clamping (see below)
 
     // --- Lateral force (Pacejka-lite, clamped to static mu) ---
     float Fy = 0.f;
@@ -49,8 +39,8 @@ ComponentOutput SimpleTire::compute(const ComponentInput& input) {
         // sin(C * atan(B * x)): B=15 steep initial slope, C=1.5 peak at ~8°
         Fy = -maxLatStatic * std::sin(1.5f * std::atan(15.f * slipAngle));
         // Low-speed lateral fade: contact patch needs velocity to deform.
-        // Quadratic below 3 m/s prevents full-lock spin from standstill.
-        float speedFade = std::min(speed * speed / 9.f, 1.f);
+        // Cubic below 3 m/s prevents full-lock spin from standstill.
+        float speedFade = std::min(speed * speed * speed / 27.f, 1.f);
         Fy *= speedFade;
     } else {
         // Low-speed stiction
@@ -107,6 +97,23 @@ ComponentOutput SimpleTire::compute(const ComponentInput& input) {
         sliding = true;
 
     tireOutput_.sliding = sliding;
+
+    // --- Rolling resistance: opposes forward motion ---
+    // ~0.015 coefficient for sport tires on tarmac
+    if (std::abs(vFwd) > 0.1f) {
+        float rollResist = rollingResistCoeff * input.normalLoad;
+        float rrForce = (vFwd > 0.f) ? -rollResist : rollResist;
+        Fx += rrForce;
+        tireOutput_.longForceN = Fx;
+    }
+
+    // --- Slip ratio (from final clamped force, not raw demand) ---
+    // Only reports non-zero when the tire is actually sliding — prevents
+    // false skid marks during normal straight-line acceleration.
+    float slipRatio = 0.f;
+    if (sliding && speed > 0.5f && maxLonStatic > 1.f)
+        slipRatio = std::clamp(Fx / maxLonStatic, -1.f, 1.f);
+    tireOutput_.slipRatio = slipRatio;
 
     // --- Rotate tire-local forces to world frame ---
     glm::vec3 tireForce = input.bodyRotation *

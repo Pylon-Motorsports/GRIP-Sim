@@ -123,10 +123,10 @@ static void makeCarBody(glm::vec4 col, VList& verts, IList& idx)
     constexpr float roofRearZ = -0.85f;  // roof rear edge
     constexpr float rwBaseZ   = -1.30f;  // rear window base
 
-    // Wheel arches
-    constexpr float archR = 0.38f;
-    constexpr float fwZ   = 1.03f;   // front wheel Z
-    constexpr float rwZ   = -0.97f;  // rear wheel Z
+    // Wheel arches — match physics subframe attachment Z positions
+    constexpr float archR = 0.42f;
+    constexpr float fwZ   = 1.35f;   // front subframe Z
+    constexpr float rwZ   = -1.25f;  // rear subframe Z
     constexpr int   ARCH_SEGS = 8;
     constexpr float PI = 3.14159265f;
 

@@ -45,6 +45,17 @@ Drivetrain::Output Drivetrain::update(float throttle, float vehicleFwdSpeed,
     engineRpm    = std::max(idleRpm, wheelRpm * overallRatio);
 
     float engineTorque = engineTorqueAtRpm(engineRpm) * throttle;
+
+    // Engine braking: when throttle is low, the engine acts as a pump.
+    // Drag torque scales linearly with RPM (friction + pumping losses).
+    if (throttle < 0.05f) {
+        float rpmNorm = (engineRpm - idleRpm) / (redlineRpm - idleRpm);
+        rpmNorm = std::clamp(rpmNorm, 0.f, 1.f);
+        float brakeTorque = engineBrakingNm * rpmNorm;
+        // Oppose engine rotation (which tracks forward speed)
+        engineTorque -= brakeTorque;
+    }
+
     float axleTorque   = engineTorque * overallRatio * efficiency;
 
     // LSD split: for now, equal split (50/50).

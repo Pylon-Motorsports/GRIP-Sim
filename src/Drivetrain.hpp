@@ -18,6 +18,7 @@ public:
     };
     float finalDriveRatio   = 4.100f;
     float efficiency        = 0.90f;   // drivetrain losses
+    float engineBrakingNm   = 40.f;   // peak engine braking torque at redline
 
     // LSD
     float lsdTorqueBias     = 2.0f;    // 1.0 = open diff, higher = tighter LSD
