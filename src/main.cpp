@@ -1,10 +1,11 @@
-#include "VulkanContext.h"
-#include "Renderer.h"
-#include "Vehicle.h"
-#include "VehiclePhysics.h"
-#include "Input.h"
-#include "Scenario.h"
-#include "TireTrail.h"
+#include "VulkanContext.hpp"
+#include "Renderer.hpp"
+#include "Vehicle.hpp"
+#include "VehiclePhysics.hpp"
+#include "Input.hpp"
+#include "Scenario.hpp"
+#include "TireTrail.hpp"
+#include "AudioEngine.hpp"
 #include <SDL2/SDL.h>
 #include <cstdio>
 #include <cmath>
@@ -36,12 +37,17 @@ int main(int /*argc*/, char** /*argv*/)
     VehiclePhysics physics;
     physics.init();
 
+    AudioEngine audio;
+    if (!audio.init())
+        std::fprintf(stderr, "Audio init failed (continuing without sound)\n");
+
     Vehicle vehicle;
     TireTrails tireTrails;
 
     // Build the playground
     Playground playground = createPlayground();
-    physics.setBumps(playground.bumps.empty() ? nullptr : &playground.bumps);
+    renderer.uploadTerrain(ctx, playground.terrain);
+    physics.setTerrain(&playground.terrain);
 
     // Try to open a game controller
     SDL_GameController* controller = nullptr;
@@ -74,8 +80,10 @@ int main(int /*argc*/, char** /*argv*/)
             if (e.type == SDL_QUIT) running = false;
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) running = false;
 
-            // Reset vehicle: R key
-            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r) {
+            // Reset vehicle: R key or Xbox Start button
+            if ((e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r)
+                || (e.type == SDL_CONTROLLERBUTTONDOWN
+                    && e.cbutton.button == SDL_CONTROLLER_BUTTON_START)) {
                 physics.reset();
                 tireTrails.clear();
             }
@@ -109,10 +117,13 @@ int main(int /*argc*/, char** /*argv*/)
             if (lt > 0.05f) input.brake    = lt;
             if (std::abs(lx) > 0.05f) input.steer = lx;
             input.clutchIn = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+            if (SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_B))
+                input.handbrake = 1.f;
         }
 
-        // Keyboard clutch: C key
+        // Keyboard clutch: C key, handbrake: Space
         if (keys[SDL_SCANCODE_C]) input.clutchIn = true;
+        if (keys[SDL_SCANCODE_SPACE]) input.handbrake = 1.f;
 
         // Fixed-timestep physics
         while (accumulator >= PHYSICS_DT) {
@@ -122,6 +133,22 @@ int main(int /*argc*/, char** /*argv*/)
 
         physics.fillVehicle(vehicle);
         tireTrails.update(vehicle);
+
+        // Update audio from physics state
+        audio.setEngineRpm(physics.getEngineRpm(), physics.getEngineRpmLimit(),
+                           input.throttle);
+        {
+            float maxSR = 0.f, maxSA = 0.f;
+            for (int i = 0; i < 4; ++i) {
+                maxSR = std::max(maxSR, std::abs(vehicle.wheelSlipRatio[i]));
+                maxSA = std::max(maxSA, std::abs(vehicle.wheelSlipAngle[i]));
+            }
+            // Scale by vehicle speed: tires don't squeal at walking speed.
+            // Use body speed, not wheel speed (wheels read zero when locked).
+            float speed = std::abs(physics.getForwardSpeed());
+            float speedGate = std::clamp(speed / 3.f, 0.f, 1.f);
+            audio.setTireSlip(maxSR * speedGate, maxSA * 57.2958f * speedGate);
+        }
 
         // Build trail geometry
         std::vector<Vertex> trailVerts;
@@ -149,6 +176,7 @@ int main(int /*argc*/, char** /*argv*/)
     }
 
     vkDeviceWaitIdle(ctx.device);
+    audio.shutdown();
     renderer.shutdown(ctx.device);
     ctx.shutdown();
     if (controller) SDL_GameControllerClose(controller);

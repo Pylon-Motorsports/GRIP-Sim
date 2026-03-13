@@ -1,7 +1,7 @@
 #pragma once
-#include "VulkanContext.h"
-#include "Vehicle.h"
-#include "Scenario.h"
+#include "VulkanContext.hpp"
+#include "Vehicle.hpp"
+#include "Terrain.hpp"
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <vector>
@@ -26,8 +26,11 @@ struct TrailGeometry {
     uint32_t idxCount   = 0;
 };
 
+struct Playground;
+
 struct Renderer {
     bool init(const VulkanContext& ctx);
+    void uploadTerrain(const VulkanContext& ctx, const Terrain& terrain);
     void draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
               const Vehicle& veh, const HudData& hud,
               const Playground& playground,
@@ -68,7 +71,12 @@ private:
     static constexpr uint32_t LABEL_MAX_IDX   = 16384;
     uint32_t labelIdxCount_ = 0;
 
-    Slice ground_, body_, rim_, tire_, axle_, unitBump_, subframe_;
+    Slice ground_, body_, rim_, tire_, axle_, subframe_;
+
+    // Terrain mesh (uploaded separately after playground creation)
+    VkBuffer       terrainVbuf_ = VK_NULL_HANDLE;  VkDeviceMemory terrainVmem_ = VK_NULL_HANDLE;
+    VkBuffer       terrainIbuf_ = VK_NULL_HANDLE;  VkDeviceMemory terrainImem_ = VK_NULL_HANDLE;
+    uint32_t       terrainIdxCount_ = 0;
 
     void drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
                    const Playground& playground, bool hasTrails);

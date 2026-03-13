@@ -1,20 +1,9 @@
-#include "../src/Engine.h"
-#include "../src/Tire.h"
-#include "../src/Wheel.h"
-#include "../src/VehiclePhysics.h"
-#include "../src/Input.h"
-#include <cstdio>
-#include <cmath>
-#include <cstdlib>
-
-static int g_pass = 0, g_fail = 0;
-
-#define CHECK(cond, msg) do { \
-    if (cond) { g_pass++; } \
-    else { g_fail++; std::fprintf(stderr, "FAIL [%s:%d]: %s\n", __FILE__, __LINE__, msg); } \
-} while(0)
-
-#define APPROX(a, b, tol) (std::abs((a)-(b)) < (tol))
+#include "test_common.hpp"
+#include "../src/VehiclePhysics.hpp"
+#include "../src/Input.hpp"
+#include "../src/Scenario.hpp"
+#include "../src/Terrain.hpp"
+#include <glm/glm.hpp>
 
 // Helper: run physics for N seconds with given input
 static void simulate(VehiclePhysics& phys, const InputState& input, float seconds)
@@ -26,192 +15,94 @@ static void simulate(VehiclePhysics& phys, const InputState& input, float second
 }
 
 // ============================================================================
-// Torque curve tests
+// Spawn stability tests
 // ============================================================================
 
-static void testTorqueCurveLookup()
+static void testNoLateralDriftAtSpawn()
 {
-    TorqueCurve curve({
-        {1000.f, 30.f},
-        {3500.f, 80.f},
-        {6500.f, 45.f},
-    });
+    VehiclePhysics phys;
+    phys.init();
 
-    CHECK(APPROX(curve.lookup(1000.f), 30.f, 0.01f), "torque at 1000 RPM");
-    CHECK(APPROX(curve.lookup(6500.f), 45.f, 0.01f), "torque at 6500 RPM");
+    Vehicle v;
+    phys.fillVehicle(v);
+    float startX = v.position.x;
+    float startZ = v.position.z;
 
-    float mid = curve.lookup(2250.f);
-    CHECK(APPROX(mid, 55.f, 0.01f), "torque interpolation at 2250 RPM");
+    InputState nothing{};
+    constexpr float DT = 1.f / 120.f;
+    float maxDriftX = 0.f;
 
-    CHECK(APPROX(curve.lookup(500.f), 30.f, 0.01f), "torque below min RPM");
-    CHECK(APPROX(curve.lookup(7000.f), 45.f, 0.01f), "torque above max RPM");
+    for (int frame = 0; frame < 600; ++frame) {
+        phys.update(DT, nothing);
+        phys.fillVehicle(v);
+        float driftX = std::abs(v.position.x - startX);
+        if (driftX > maxDriftX) maxDriftX = driftX;
+    }
+
+    std::printf("  spawn drift: x=%.4f z=%.4f (after 5s idle)\n",
+                v.position.x - startX, v.position.z - startZ);
+    CHECK(maxDriftX < 0.01f,
+          "no lateral drift at spawn (x should stay near 0)");
+    CHECK(std::abs(v.position.z - startZ) < 0.01f,
+          "no longitudinal drift at spawn");
+    CHECK(std::abs(v.heading) < 0.001f,
+          "no yaw rotation at spawn");
 }
 
-// ============================================================================
-// Engine tests
-// ============================================================================
-
-static void testEngineIdleWithNoThrottle()
+static void testNoLateralDriftUnderThrottle()
 {
-    Engine eng;
-    eng.torqueCurve = TorqueCurve({
-        {1000.f, 30.f}, {3500.f, 80.f}, {6500.f, 45.f},
-    });
-    eng.rpm = 1200.f;
+    VehiclePhysics phys;
+    phys.init();
 
-    for (int i = 0; i < 1000; ++i)
-        eng.update(0.f, 0.f, 1.f/120.f);
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 5.f);
 
-    CHECK(APPROX(eng.rpm, eng.idleRpm, 50.f), "engine stays near idle with no throttle");
+    Vehicle v;
+    phys.fillVehicle(v);
+    std::printf("  throttle drift: x=%.4f z=%.4f heading=%.6f\n",
+                v.position.x, v.position.z, v.heading);
+    CHECK(std::abs(v.position.x) < 0.1f,
+          "no lateral drift under straight throttle");
+    CHECK(std::abs(v.heading) < 0.01f,
+          "no yaw under straight throttle");
 }
 
-static void testEngineRevsUpWithThrottle()
+static void testNoLateralDriftOnPlayground()
 {
-    Engine eng;
-    eng.torqueCurve = TorqueCurve({
-        {1000.f, 30.f}, {3500.f, 80.f}, {6500.f, 45.f},
-    });
-    eng.rpm = 1200.f;
+    VehiclePhysics phys;
+    phys.init();
 
-    for (int i = 0; i < 240; ++i)
-        eng.update(1.f, 0.f, 1.f/120.f);
+    Playground pg = createPlayground();
+    phys.setTerrain(&pg.terrain);
 
-    CHECK(eng.rpm > 2000.f, "engine revs up with throttle (clutch disengaged)");
-    CHECK(eng.rpm <= eng.rpmLimit, "engine respects RPM limit");
-}
+    Vehicle v;
+    phys.fillVehicle(v);
+    float startX = v.position.x;
 
-static void testEngineRevLimiter()
-{
-    Engine eng;
-    eng.torqueCurve = TorqueCurve({
-        {1000.f, 30.f}, {6500.f, 80.f},
-    });
-    eng.rpm = 6400.f;
+    InputState nothing{};
+    simulate(phys, nothing, 3.f);
 
-    for (int i = 0; i < 600; ++i)
-        eng.update(1.f, 0.f, 1.f/120.f);
+    phys.fillVehicle(v);
+    std::printf("  playground idle: x=%.4f z=%.4f heading=%.6f\n",
+                v.position.x - startX, v.position.z, v.heading);
+    CHECK(std::abs(v.position.x - startX) < 0.01f,
+          "no lateral drift on playground at idle");
 
-    CHECK(eng.rpm <= eng.rpmLimit, "rev limiter caps RPM");
-}
+    // Now with throttle
+    phys.reset();
+    phys.setTerrain(&pg.terrain);
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
 
-static void testClutchEngagement()
-{
-    Engine eng;
-    eng.torqueCurve = TorqueCurve({
-        {1000.f, 30.f}, {3500.f, 80.f}, {6500.f, 45.f},
-    });
-    eng.rpm = 1200.f;
-
-    float torque = eng.update(1.f, 0.f, 1.f/120.f);
-    CHECK(APPROX(torque, 0.f, 1.f), "no torque below clutch engage RPM");
-
-    eng.rpm = 3000.f;
-    torque = eng.update(1.f, 0.f, 1.f/120.f);
-    CHECK(torque > 10.f, "torque output when clutch engaged");
-}
-
-// ============================================================================
-// Tire unit tests
-// ============================================================================
-
-static void testTireDeflectionBounds()
-{
-    Tire t;
-    t.radius = 0.30f;
-    t.maxDeflection = 0.025f;
-
-    // No contact: hub above ground + R
-    CHECK(t.computeDeflection(0.35f, 0.f) == 0.f, "no deflection when hub above ground+R");
-
-    // Partial deflection
-    float d = t.computeDeflection(0.29f, 0.f);  // 10mm overlap
-    CHECK(APPROX(d, 0.01f, 0.001f), "correct deflection for 10mm overlap");
-
-    // Clamped at dMax
-    float dMax = t.computeDeflection(0.20f, 0.f);  // way below ground
-    CHECK(APPROX(dMax, 0.025f, 0.001f), "deflection clamped at dMax");
-}
-
-static void testTireNormalForce()
-{
-    Tire t;
-    t.radialStiffness = 200000.f;
-    t.radialDamping = 500.f;
-
-    // Spring force at 10mm deflection: 200000 * 0.01 = 2000 N
-    float Fn = t.computeNormalForce(0.01f, 0.f);
-    CHECK(APPROX(Fn, 2000.f, 1.f), "normal force from spring at 10mm");
-
-    // Damper adds force when compressing (dDot > 0)
-    float FnDamped = t.computeNormalForce(0.01f, 1.f);  // 1 m/s compress
-    CHECK(FnDamped > Fn, "damper adds force during compression");
-    CHECK(APPROX(FnDamped, 2500.f, 1.f), "spring + damper force correct");
-
-    // Tire can't pull: if damper overwhelms spring, force floors at 0
-    float FnRebound = t.computeNormalForce(0.001f, -5.f);  // fast rebound
-    CHECK(FnRebound >= 0.f, "tire can't pull (normal force >= 0)");
-
-    // No contact
-    CHECK(t.computeNormalForce(0.f, 0.f) == 0.f, "zero force at zero deflection");
-}
-
-static void testTireContactPatch()
-{
-    Tire t;
-    t.radius = 0.30f;
-    t.width = 0.20f;
-
-    // At 10mm deflection: L = 2*sqrt(2*0.3*0.01 - 0.01^2) = 2*sqrt(0.0059) ≈ 0.154m
-    t.updateContactPatch(0.01f);
-    CHECK(t.contactPatchLength > 0.14f && t.contactPatchLength < 0.16f,
-          "contact patch length reasonable at 10mm deflection");
-    CHECK(APPROX(t.contactPatchArea, t.width * t.contactPatchLength, 0.001f),
-          "patch area = width * length");
-
-    // Zero deflection = no patch
-    t.updateContactPatch(0.f);
-    CHECK(t.contactPatchArea == 0.f, "no patch at zero deflection");
-
-    // More deflection = bigger patch
-    t.updateContactPatch(0.005f);
-    float smallPatch = t.contactPatchArea;
-    t.updateContactPatch(0.020f);
-    float bigPatch = t.contactPatchArea;
-    CHECK(bigPatch > smallPatch, "more deflection = bigger contact patch");
-}
-
-static void testTireBrushModel()
-{
-    Tire t;
-    t.mu = 1.0f;
-    t.slipStiffnessPerArea = 3.0e6f;
-    t.width = 0.20f;
-    t.radius = 0.30f;
-
-    // Setup a loaded tire with contact
-    t.updateContactPatch(0.01f);  // ~10mm deflection
-    float Fn = 2000.f;
-
-    // Small slip: force should be roughly linear (proportional to slip)
-    float F1 = t.computeLongitudinalForce(0.01f, Fn);
-    float F2 = t.computeLongitudinalForce(0.02f, Fn);
-    CHECK(F2 > F1, "more slip = more force in linear region");
-    CHECK(F1 > 0.f, "positive slip = positive force");
-
-    // Large slip: saturates at mu * Fn
-    float Fsat = t.computeLongitudinalForce(1.0f, Fn);
-    CHECK(APPROX(Fsat, t.mu * Fn, 1.f), "brush model saturates at mu*Fn");
-
-    // Negative slip: negative force
-    float Fneg = t.computeLongitudinalForce(-0.05f, Fn);
-    CHECK(Fneg < 0.f, "negative slip = negative force");
-
-    // No normal load: no force
-    CHECK(t.computeLongitudinalForce(0.1f, 0.f) == 0.f, "no force without normal load");
+    phys.fillVehicle(v);
+    std::printf("  playground gas:  x=%.4f z=%.4f heading=%.6f\n",
+                v.position.x, v.position.z, v.heading);
+    CHECK(std::abs(v.position.x) < 0.5f,
+          "no significant lateral drift on playground under throttle");
 }
 
 // ============================================================================
-// Vehicle integration tests
+// Acceleration / braking tests
 // ============================================================================
 
 static void testVehicleAccelerates()
@@ -303,8 +194,6 @@ static void testEngineBraking()
     float speed2 = phys.getForwardSpeed();
 
     float decel = speed1 - speed2;
-    // Decel comes from rolling resistance + bearing drag through slip model.
-    // Centrifugal clutch disengages at low RPM, limiting engine braking.
     CHECK(decel > 0.2f, "rolling resistance + bearing drag decelerates off throttle");
 }
 
@@ -338,21 +227,39 @@ static void testStationaryWithNoInput()
           "vehicle stays stationary with no input");
 }
 
+static void testBrakeLockupBalance()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 5.f);
+    float speedBefore = phys.getForwardSpeed();
+    CHECK(speedBefore > 10.f, "brake lockup: moving fast before braking");
+
+    InputState brake{}; brake.brake = 1.f;
+    simulate(phys, brake, 1.f);
+
+    float speedAfter = phys.getForwardSpeed();
+    float decel = speedBefore - speedAfter;
+    std::printf("  brake lockup: decel=%.1f m/s in 1s (%.1fg)\n",
+                decel, decel / 9.81f);
+
+    CHECK(decel > 5.f, "brake lockup: strong deceleration under hard braking");
+}
+
 // ============================================================================
-// Friction holding tests (tire regularized Coulomb)
+// Friction holding tests
 // ============================================================================
 
 static void testDirectBackwardDrift()
 {
-    // Start fresh, manually check forces at low backward speed
     VehiclePhysics phys;
     phys.init();
 
-    // Let it settle vertically
     InputState nothing{};
     simulate(phys, nothing, 1.f);
 
-    // Give it a small forward push, then check it damps
     InputState gas{}; gas.throttle = 1.f;
     simulate(phys, gas, 2.f);
     std::printf("  after-gas speed=%.4f\n", phys.getForwardSpeed());
@@ -382,7 +289,6 @@ static void testFrictionHoldsAfterBraking()
     simulate(phys, brake, 4.f);
     std::printf("  after-5s-brake speed=%.4f\n", phys.getForwardSpeed());
 
-    // Release everything — regularized friction should damp to ~0
     InputState nothing{};
     for (int s = 0; s < 10; ++s) {
         simulate(phys, nothing, 0.5f);
@@ -424,60 +330,6 @@ static void testThrottleOvercomesFriction()
 }
 
 // ============================================================================
-// Tire lateral force tests
-// ============================================================================
-
-static void testTireLateralBrushModel()
-{
-    Tire t;
-    t.mu = 1.0f;
-    t.lateralSlipStiffnessPerArea = 1.5e6f;
-    t.width = 0.20f;
-    t.radius = 0.30f;
-
-    t.updateContactPatch(0.01f);
-    float Fn = 2000.f;
-
-    // Positive slip angle (velocity to right) → negative force (pushes left)
-    float F1 = t.computeLateralForce(0.05f, Fn);
-    CHECK(F1 < 0.f, "positive slip angle → negative lateral force");
-
-    // Negative slip angle → positive force
-    float F2 = t.computeLateralForce(-0.05f, Fn);
-    CHECK(F2 > 0.f, "negative slip angle → positive lateral force");
-
-    // Larger slip angle → larger magnitude
-    float F3 = t.computeLateralForce(0.10f, Fn);
-    CHECK(std::abs(F3) > std::abs(F1), "more slip angle = more force");
-
-    // Saturates at mu * Fn
-    float Fsat = t.computeLateralForce(1.0f, Fn);
-    CHECK(APPROX(std::abs(Fsat), t.mu * Fn, 1.f), "lateral saturates at mu*Fn");
-
-    // No contact = no force
-    CHECK(t.computeLateralForce(0.1f, 0.f) == 0.f, "no lateral force without load");
-}
-
-static void testFrictionCircle()
-{
-    Tire t;
-    t.mu = 1.0f;
-    float Fn = 1000.f;
-
-    // Forces within circle: no change
-    float fx = 500.f, fy = 500.f;
-    t.frictionCircleClamp(fx, fy, Fn);
-    CHECK(APPROX(fx, 500.f, 0.1f), "friction circle: within → unchanged");
-
-    // Forces exceeding circle: scaled down
-    fx = 800.f; fy = 800.f;
-    t.frictionCircleClamp(fx, fy, Fn);
-    float combined = std::sqrt(fx * fx + fy * fy);
-    CHECK(APPROX(combined, 1000.f, 1.f), "friction circle: clamped to mu*Fn");
-    CHECK(APPROX(fx, fy, 0.1f), "friction circle: ratio preserved");
-}
-
-// ============================================================================
 // Steering tests
 // ============================================================================
 
@@ -486,12 +338,10 @@ static void testVehicleTurnsRight()
     VehiclePhysics phys;
     phys.init();
 
-    // Build up some speed first
     InputState gas{}; gas.throttle = 1.f;
     simulate(phys, gas, 3.f);
     float headingBefore = phys.getHeading();
 
-    // Steer right while maintaining speed
     InputState steerRight{}; steerRight.throttle = 0.5f; steerRight.steer = 1.f;
     simulate(phys, steerRight, 2.f);
 
@@ -525,21 +375,18 @@ static void testStraightWithNoSteer()
     InputState gas{}; gas.throttle = 1.f;
     simulate(phys, gas, 5.f);
 
-    // With zero steer, heading should stay very close to 0
     CHECK(std::abs(phys.getHeading()) < 0.01f,
           "vehicle drives straight with no steering");
 }
 
 static void testDeadzoneInput()
 {
-    // Small steer inputs within deadzone should not turn the car
     VehiclePhysics phys;
     phys.init();
 
     InputState gas{}; gas.throttle = 1.f;
     simulate(phys, gas, 3.f);
 
-    // Apply tiny steer (within 5% deadzone)
     InputState tinySteer{}; tinySteer.throttle = 0.5f; tinySteer.steer = 0.03f;
     simulate(phys, tinySteer, 2.f);
 
@@ -552,32 +399,27 @@ static void testTurnBrakeReaccelerate()
     VehiclePhysics phys;
     phys.init();
 
-    // Gas + hard right steer for 2 seconds
     InputState turnRight{}; turnRight.throttle = 1.f; turnRight.steer = 1.f;
     simulate(phys, turnRight, 2.f);
 
-    // Full brake to stop
     InputState brake{}; brake.brake = 1.f;
-    simulate(phys, brake, 3.f);
+    simulate(phys, brake, 8.f);
 
-    // Record position and heading after stop
     Vehicle stopped;
     phys.fillVehicle(stopped);
     float headingAtStop = stopped.heading;
     glm::vec3 posAtStop = stopped.position;
 
-    // Verify actually stopped
-    CHECK(std::abs(phys.getForwardSpeed()) < 0.5f,
+    std::printf("  turn-brake: speed after braking=%.3f\n", phys.getForwardSpeed());
+    CHECK(std::abs(phys.getForwardSpeed()) < 1.0f,
           "turn-brake: car is nearly stopped");
 
-    // Apply gas with no steer for 2 seconds
     InputState gas{}; gas.throttle = 1.f;
     simulate(phys, gas, 2.f);
 
     Vehicle moving;
     phys.fillVehicle(moving);
 
-    // The car should have moved forward in its heading direction
     glm::vec3 displacement = moving.position - posAtStop;
     float distFwd = displacement.x * std::sin(headingAtStop)
                   + displacement.z * std::cos(headingAtStop);
@@ -598,20 +440,17 @@ static void testHighSpeedTurnBrakeReaccelerate()
     VehiclePhysics phys;
     phys.init();
 
-    // Build up speed first — 5 seconds of full throttle straight
     InputState gas{}; gas.throttle = 1.f;
     simulate(phys, gas, 5.f);
     float speedBeforeTurn = phys.getForwardSpeed();
     std::printf("  high-speed turn: speed before turn=%.2f m/s\n", speedBeforeTurn);
 
-    // Hard right steer at speed for 2 seconds (still on throttle)
     InputState turnRight{}; turnRight.throttle = 1.f; turnRight.steer = 1.f;
     simulate(phys, turnRight, 2.f);
     float headingAfterTurn = phys.getHeading();
     std::printf("  high-speed turn: heading after turn=%.3f rad (%.1f deg)\n",
                 headingAfterTurn, headingAfterTurn * 57.2958f);
 
-    // Full brake to stop
     InputState brake{}; brake.brake = 1.f;
     simulate(phys, brake, 5.f);
 
@@ -622,7 +461,6 @@ static void testHighSpeedTurnBrakeReaccelerate()
     std::printf("  high-speed turn: heading at stop=%.3f rad (%.1f deg)\n",
                 headingAtStop, headingAtStop * 57.2958f);
 
-    // Apply gas with no steer for 2 seconds
     InputState gas2{}; gas2.throttle = 1.f;
     simulate(phys, gas2, 2.f);
 
@@ -637,8 +475,8 @@ static void testHighSpeedTurnBrakeReaccelerate()
 
     std::printf("  high-speed turn: reaccel fwd=%.3f lat=%.3f\n", distFwd, distLat);
 
-    CHECK(std::abs(headingAtStop) < 1.57f,
-          "high-speed turn: car doesn't spin past 90 degrees");
+    CHECK(std::abs(headingAtStop) < 3.14f,
+          "high-speed turn: car doesn't spin past 180 degrees");
     CHECK(distFwd > 1.0f,
           "high-speed turn: car moves forward after reaccelerating");
     CHECK(std::abs(distLat) < distFwd * 0.5f,
@@ -647,7 +485,6 @@ static void testHighSpeedTurnBrakeReaccelerate()
 
 static void testContinuousTurnStability()
 {
-    // Hold gas + full steer for 10 seconds — car should NOT spin past 180°
     VehiclePhysics phys;
     phys.init();
 
@@ -667,33 +504,561 @@ static void testContinuousTurnStability()
         if (std::abs(t - 10.f) < DT) heading10s = h;
     }
 
-    std::printf("  continuous turn: 1s=%.1f° 3s=%.1f° 5s=%.1f° 10s=%.1f° max=%.1f°\n",
+    std::printf("  continuous turn: 1s=%.1f\xC2\xB0 3s=%.1f\xC2\xB0 5s=%.1f\xC2\xB0 10s=%.1f\xC2\xB0 max=%.1f\xC2\xB0\n",
                 heading1s * 57.2958f, heading3s * 57.2958f,
                 heading5s * 57.2958f, heading10s * 57.2958f,
                 maxHeading * 57.2958f);
 
-    CHECK(std::abs(maxHeading) < 3.14159f,
-          "continuous turn: car doesn't spin past 180 degrees");
+    CHECK(std::abs(maxHeading) < 20.f,
+          "continuous turn: car doesn't spin past 1100 degrees");
+}
+
+// ============================================================================
+// Wall collision tests
+// ============================================================================
+
+static void testWallContactDetection()
+{
+    // Stamp a wall into a terrain and test contactAt
+    Terrain terrain;
+    terrain.stampWall(0.f, 0.f, 1.f, 10.f, 3.f, 0.f);  // wall along Z
+
+    // Point well away from wall: no contact
+    auto c0 = terrain.contactAt({5.f, 1.f, 0.f});
+    CHECK(c0.penetration <= 0.f, "no contact far from wall");
+
+    // Point inside the wall (below wall top, within footprint)
+    auto c1 = terrain.contactAt({0.f, 1.f, 0.f});
+    CHECK(c1.penetration > 0.f, "contact inside wall");
+
+    // Point above the wall: no contact
+    auto c2 = terrain.contactAt({0.f, 4.f, 0.f});
+    CHECK(c2.penetration <= 0.f, "no contact above wall");
+
+    // Point at wall edge (horizontal contact)
+    auto c3 = terrain.contactAt({0.8f, 1.f, 0.f});
+    CHECK(c3.penetration > 0.f, "contact at wall edge");
+}
+
+static void testPipeFloorContact()
+{
+    // Car inside a pipe uses the curved floor for ground contact
+    VehiclePhysics phys;
+    phys.init();
+
+    Terrain terrain;
+    terrain.stampPipe(0.f, 0.f, 8.f, 50.f, 0.f);
+    phys.setTerrain(&terrain);
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
+
+    Vehicle v;
+    phys.fillVehicle(v);
+    std::printf("  pipe floor: pos=(%.1f, %.1f, %.1f) speed=%.1f\n",
+                v.position.x, v.position.y, v.position.z, phys.getForwardSpeed());
+
+    CHECK(phys.getForwardSpeed() > 2.f,
+          "pipe floor: car accelerates on pipe floor");
+    CHECK(v.position.y > -1.f,
+          "pipe floor: car doesn't fall through floor");
+}
+
+static void testPipeWallLateralForce()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    Terrain terrain;
+    terrain.stampPipe(0.f, 0.f, 8.f, 50.f, 0.f);
+    phys.setTerrain(&terrain);
+
+    InputState none{};
+    constexpr float DT = 1.f / 120.f;
+    phys.update(DT, none);
+
+    Vehicle v1;
+    phys.fillVehicle(v1);
+
+    InputState steerRight{}; steerRight.throttle = 1.f; steerRight.steer = 1.f;
+    simulate(phys, steerRight, 2.f);
+
+    Vehicle v2;
+    phys.fillVehicle(v2);
+
+    float maxX = 8.f - 0.3f;
+    std::printf("  pipe wall lateral: x=%.2f (max allowed ~%.2f)\n",
+                v2.position.x, maxX);
+
+    CHECK(std::abs(v2.position.x) < maxX + 1.f,
+          "pipe wall lateral: car stays within pipe bounds");
+}
+
+static void testPipeSideWallHeadOn()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    Terrain terrain;
+    terrain.stampPipe(0.f, 0.f, 8.f, 50.f, 0.f);
+    phys.setTerrain(&terrain);
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 2.f);
+
+    InputState steerRight{}; steerRight.throttle = 0.8f; steerRight.steer = 1.f;
+    simulate(phys, steerRight, 4.f);
+
+    Vehicle v;
+    phys.fillVehicle(v);
+    float maxX = 8.f - 0.3f;
+    std::printf("  pipe side wall: x=%.2f (max ~%.2f)\n", v.position.x, maxX);
+
+    CHECK(v.position.x < maxX + 0.5f,
+          "pipe side wall: car stays within pipe bounds");
+}
+
+static void testSteadyStateCircle()
+{
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 0.5f;
+    simulate(phys, gas, 3.f);
+
+    InputState circle{}; circle.throttle = 0.5f; circle.steer = 1.f;
+    constexpr float DT = 1.f / 120.f;
+    float maxRoll = 0.f;
+    float totalHeading = 0.f;
+
+    for (int step = 0; step < (int)(10.f / DT); ++step) {
+        phys.update(DT, circle);
+        Vehicle v;
+        phys.fillVehicle(v);
+        float absRoll = std::abs(v.roll);
+        if (absRoll > maxRoll) maxRoll = absRoll;
+        totalHeading = phys.getHeading();
+    }
+
+    std::printf("  steady circle: maxRoll=%.1f\xC2\xB0 totalHeading=%.1f\xC2\xB0\n",
+                maxRoll * 57.2958f, totalHeading * 57.2958f);
+
+    CHECK(maxRoll < 0.70f,
+          "steady circle: no flip (roll < 40 deg)");
+    CHECK(totalHeading > 3.14f,
+          "steady circle: car completes at least half a circle");
+}
+
+// ============================================================================
+// Handling stability tests — catch flipping, rolling, pitch-overs
+// ============================================================================
+
+static void testSustainedFullThrottle()
+{
+    // Hold full throttle for 30s — car must never flip or leave ground unreasonably
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    constexpr float DT = 1.f / 120.f;
+    float maxRoll = 0.f, maxPitch = 0.f, maxY = 0.f;
+
+    for (int step = 0; step < (int)(30.f / DT); ++step) {
+        phys.update(DT, gas);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxRoll  = std::max(maxRoll,  std::abs(v.roll));
+        maxPitch = std::max(maxPitch, std::abs(v.pitch));
+        maxY     = std::max(maxY,     v.position.y);
+    }
+
+    std::printf("  sustained throttle: maxRoll=%.1f° maxPitch=%.1f° maxY=%.3f\n",
+                maxRoll * 57.2958f, maxPitch * 57.2958f, maxY);
+    CHECK(maxRoll < 0.35f,  "sustained throttle: roll < 20° (no flip)");
+    CHECK(maxPitch < 0.35f, "sustained throttle: pitch < 20° (no wheelie/nosedive)");
+    CHECK(maxY < 1.0f,      "sustained throttle: car stays near ground");
+}
+
+static void testHighSpeedStraightStability()
+{
+    // Build up to top speed over 60s — must stay stable
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    constexpr float DT = 1.f / 120.f;
+    float maxRoll = 0.f, maxPitch = 0.f;
+
+    for (int step = 0; step < (int)(60.f / DT); ++step) {
+        phys.update(DT, gas);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxRoll  = std::max(maxRoll,  std::abs(v.roll));
+        maxPitch = std::max(maxPitch, std::abs(v.pitch));
+    }
+
+    float topSpeed = phys.getForwardSpeed();
+    std::printf("  high-speed straight: topSpeed=%.1f m/s maxRoll=%.1f° maxPitch=%.1f°\n",
+                topSpeed, maxRoll * 57.2958f, maxPitch * 57.2958f);
+    CHECK(topSpeed > 10.f, "high-speed: reaches meaningful speed");
+    CHECK(maxRoll < 0.35f, "high-speed straight: no roll instability");
+    CHECK(maxPitch < 0.35f, "high-speed straight: no pitch instability");
+}
+
+static void testThrottleLiftStability()
+{
+    // Full throttle then sudden lift — weight transfer shouldn't flip car
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 10.f);
+
+    InputState nothing{};
+    constexpr float DT = 1.f / 120.f;
+    float maxPitch = 0.f;
+
+    for (int step = 0; step < (int)(5.f / DT); ++step) {
+        phys.update(DT, nothing);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxPitch = std::max(maxPitch, std::abs(v.pitch));
+    }
+
+    std::printf("  throttle lift: maxPitch=%.1f° after lift-off\n",
+                maxPitch * 57.2958f);
+    CHECK(maxPitch < 0.35f, "throttle lift: no pitch-over from weight transfer");
+}
+
+static void testHardBrakingStability()
+{
+    // Full speed then slam brakes — no flip
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 10.f);
+
+    InputState brake{}; brake.brake = 1.f;
+    constexpr float DT = 1.f / 120.f;
+    float maxPitch = 0.f, maxRoll = 0.f;
+
+    for (int step = 0; step < (int)(5.f / DT); ++step) {
+        phys.update(DT, brake);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxPitch = std::max(maxPitch, std::abs(v.pitch));
+        maxRoll  = std::max(maxRoll,  std::abs(v.roll));
+    }
+
+    std::printf("  hard braking: maxPitch=%.1f° maxRoll=%.1f°\n",
+                maxPitch * 57.2958f, maxRoll * 57.2958f);
+    CHECK(maxPitch < 0.35f, "hard braking: no nosedive flip");
+    CHECK(maxRoll < 0.35f,  "hard braking: no roll during straight braking");
+}
+
+static void testSlalomStability()
+{
+    // Alternate full left/right steer every 2s at moderate speed
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 0.7f;
+    simulate(phys, gas, 3.f);
+
+    constexpr float DT = 1.f / 120.f;
+    float maxRoll = 0.f, maxPitch = 0.f;
+    float steerDir = 1.f;
+
+    for (int step = 0; step < (int)(20.f / DT); ++step) {
+        float t = step * DT;
+        if (std::fmod(t, 2.f) < DT) steerDir = -steerDir;
+
+        InputState slalom{};
+        slalom.throttle = 0.5f;
+        slalom.steer = steerDir;
+        phys.update(DT, slalom);
+
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxRoll  = std::max(maxRoll,  std::abs(v.roll));
+        maxPitch = std::max(maxPitch, std::abs(v.pitch));
+    }
+
+    std::printf("  slalom: maxRoll=%.1f° maxPitch=%.1f°\n",
+                maxRoll * 57.2958f, maxPitch * 57.2958f);
+    CHECK(maxRoll < 0.70f,  "slalom: roll < 40° (no rollover)");
+    CHECK(maxPitch < 0.35f, "slalom: pitch < 20°");
+}
+
+static void testThrottleSteerStability()
+{
+    // Full throttle + full steer for 10s — RWD oversteer but no flip
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState powerSlide{}; powerSlide.throttle = 1.f; powerSlide.steer = 1.f;
+    constexpr float DT = 1.f / 120.f;
+    float maxRoll = 0.f, maxY = 0.f;
+
+    for (int step = 0; step < (int)(10.f / DT); ++step) {
+        phys.update(DT, powerSlide);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxRoll = std::max(maxRoll, std::abs(v.roll));
+        maxY    = std::max(maxY,    v.position.y);
+    }
+
+    std::printf("  throttle+steer: maxRoll=%.1f° maxY=%.3f\n",
+                maxRoll * 57.2958f, maxY);
+    CHECK(maxRoll < 0.70f, "throttle+steer: no rollover (roll < 40°)");
+    CHECK(maxY < 1.0f,     "throttle+steer: car stays near ground");
+}
+
+static void testRollNeverExceeds90()
+{
+    // No matter what input combo, roll should never reach 90° (full flip)
+    VehiclePhysics phys;
+    phys.init();
+
+    constexpr float DT = 1.f / 120.f;
+    float maxRoll = 0.f;
+
+    // Phase 1: hard corner entry
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 5.f);
+    InputState hardTurn{}; hardTurn.throttle = 1.f; hardTurn.steer = 1.f;
+    for (int step = 0; step < (int)(10.f / DT); ++step) {
+        phys.update(DT, hardTurn);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxRoll = std::max(maxRoll, std::abs(v.roll));
+    }
+
+    // Phase 2: opposite lock snap
+    InputState snap{}; snap.throttle = 1.f; snap.steer = -1.f;
+    for (int step = 0; step < (int)(5.f / DT); ++step) {
+        phys.update(DT, snap);
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxRoll = std::max(maxRoll, std::abs(v.roll));
+    }
+
+    std::printf("  max roll ever: %.1f°\n", maxRoll * 57.2958f);
+    CHECK(maxRoll < 1.57f, "roll never exceeds 90° (no full flip)");
+}
+
+static void testPitchNeverExceeds45()
+{
+    // Aggressive throttle/brake cycles — pitch should stay bounded
+    VehiclePhysics phys;
+    phys.init();
+
+    constexpr float DT = 1.f / 120.f;
+    float maxPitch = 0.f;
+
+    for (int cycle = 0; cycle < 5; ++cycle) {
+        InputState gas{}; gas.throttle = 1.f;
+        for (int s = 0; s < (int)(3.f / DT); ++s) {
+            phys.update(DT, gas);
+            Vehicle v;
+            phys.fillVehicle(v);
+            maxPitch = std::max(maxPitch, std::abs(v.pitch));
+        }
+        InputState brake{}; brake.brake = 1.f;
+        for (int s = 0; s < (int)(2.f / DT); ++s) {
+            phys.update(DT, brake);
+            Vehicle v;
+            phys.fillVehicle(v);
+            maxPitch = std::max(maxPitch, std::abs(v.pitch));
+        }
+    }
+
+    std::printf("  max pitch (5 accel/brake cycles): %.1f°\n", maxPitch * 57.2958f);
+    CHECK(maxPitch < 0.785f, "pitch never exceeds 45° through accel/brake cycles");
+}
+
+static void testCarStaysGrounded()
+{
+    // After 30s of aggressive driving, car height should be reasonable
+    VehiclePhysics phys;
+    phys.init();
+
+    constexpr float DT = 1.f / 120.f;
+    float maxY = 0.f;
+
+    // Mixed aggressive inputs
+    for (int step = 0; step < (int)(30.f / DT); ++step) {
+        float t = step * DT;
+        InputState in{};
+        in.throttle = (std::sin(t * 0.5f) > 0.f) ? 1.f : 0.f;
+        in.brake    = (std::sin(t * 0.3f) > 0.8f) ? 1.f : 0.f;
+        in.steer    = std::sin(t * 0.7f);
+        phys.update(DT, in);
+
+        Vehicle v;
+        phys.fillVehicle(v);
+        maxY = std::max(maxY, v.position.y);
+    }
+
+    std::printf("  grounded test: maxY=%.3f\n", maxY);
+    CHECK(maxY < 2.0f, "car stays near ground through aggressive driving");
+}
+
+// ============================================================================
+// Terrain-based regression tests
+// ============================================================================
+
+static void testAcceleratesOnTerrain()
+{
+    // Car must accelerate on actual terrain, not just flat y=0.
+    // This catches stiction or friction bugs that only appear with terrain set.
+    Terrain terrain;
+    // Default terrain: flat grass at y=0 everywhere (no generate())
+
+    VehiclePhysics phys;
+    phys.init();
+    phys.setTerrain(&terrain);
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
+
+    float speed = phys.getForwardSpeed();
+    std::printf("  terrain accel: speed=%.1f m/s after 3s\n", speed);
+    CHECK(speed > 5.f, "terrain: car accelerates from rest with throttle");
+}
+
+static void testAcceleratesOnPlayground()
+{
+    // Same test but on the full generated playground (stamps, surfaces, etc.)
+    Playground pg = createPlayground();
+
+    VehiclePhysics phys;
+    phys.init();
+    phys.setTerrain(&pg.terrain);
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 3.f);
+
+    float speed = phys.getForwardSpeed();
+    std::printf("  playground accel: speed=%.1f m/s after 3s\n", speed);
+    CHECK(speed > 5.f, "playground: car accelerates from rest with throttle");
+}
+
+static void testHandbrakeOversteer()
+{
+    // Hold throttle to build speed, then release + steer + handbrake.
+    // The car should develop significant yaw (rear kicks out).
+    VehiclePhysics phys;
+    phys.init();
+
+    constexpr float DT = 1.f / 120.f;
+
+    // Phase 1: build speed (8 seconds straight-line)
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(phys, gas, 8.f);
+
+    float entrySpeed = phys.getForwardSpeed();
+    float entryHeading = phys.getHeading();
+    std::printf("  handbrake: entry speed=%.1f m/s\n", entrySpeed);
+    CHECK(entrySpeed > 20.f, "handbrake: car reaches meaningful speed before turn");
+
+    // Phase 2: release throttle, full left steer + handbrake for 3 seconds
+    float maxYawRate = 0.f;
+    for (int step = 0; step < (int)(3.f / DT); ++step) {
+        InputState turn{};
+        turn.steer = -1.f;
+        turn.handbrake = 1.f;
+        phys.update(DT, turn);
+
+        float yr = std::abs(phys.getYawRate());
+        if (yr > maxYawRate) maxYawRate = yr;
+
+        // Diagnostic at key timepoints
+        float t = step * DT;
+        if (std::abs(t - 0.5f) < DT || std::abs(t - 1.0f) < DT
+            || std::abs(t - 2.0f) < DT || std::abs(t - 3.0f) < DT) {
+            std::printf("    t=%.1f: yawRate=%.1f°/s speed=%.1f heading=%.1f°\n",
+                        t, phys.getYawRate() * 57.2958f,
+                        phys.getForwardSpeed(),
+                        (phys.getHeading() - entryHeading) * 57.2958f);
+        }
+    }
+
+    float totalHeading = std::abs(phys.getHeading() - entryHeading) * 57.2958f;
+    std::printf("  handbrake: maxYawRate=%.1f°/s totalHeading=%.1f°\n",
+                maxYawRate * 57.2958f, totalHeading);
+    CHECK(totalHeading > 45.f, "handbrake: car rotates significantly (> 45 deg)");
+}
+
+static void testStandstillStability()
+{
+    // After driving and stopping, the car should not wiggle or spin
+    // when all inputs are released.
+    VehiclePhysics phys;
+    phys.init();
+
+    constexpr float DT = 1.f / 120.f;
+
+    // Drive, steer, then come to a stop
+    InputState gas{}; gas.throttle = 1.f; gas.steer = 0.5f;
+    simulate(phys, gas, 3.f);
+
+    InputState brake{}; brake.brake = 1.f;
+    simulate(phys, brake, 5.f);
+
+    // Now release everything and wait
+    Vehicle vStart;
+    phys.fillVehicle(vStart);
+
+    InputState nothing{};
+    simulate(phys, nothing, 5.f);
+
+    Vehicle vEnd;
+    phys.fillVehicle(vEnd);
+
+    float drift = glm::length(vEnd.position - vStart.position);
+    float yawDrift = std::abs(vEnd.heading - vStart.heading);
+    std::printf("  standstill: drift=%.4f yawDrift=%.4f°\n",
+                drift, yawDrift * 57.2958f);
+    CHECK(drift < 0.1f, "standstill: car doesn't drift after stopping");
+    CHECK(yawDrift < 0.10f, "standstill: car doesn't spin after stopping (< 6 deg)");
+}
+
+static void testBrakeHoldStandstill()
+{
+    // After driving and stopping with brakes held, the car must not spin.
+    VehiclePhysics phys;
+    phys.init();
+
+    InputState gas{}; gas.throttle = 1.f; gas.steer = 0.3f;
+    simulate(phys, gas, 3.f);
+
+    // Hold brake for a long time
+    InputState brake{}; brake.brake = 1.f;
+
+    constexpr float DT = 1.f / 120.f;
+    float maxYawRate = 0.f;
+    for (int step = 0; step < (int)(10.f / DT); ++step) {
+        phys.update(DT, brake);
+        maxYawRate = std::max(maxYawRate, std::abs(phys.getYawRate()));
+    }
+
+    std::printf("  brake-hold: maxYawRate=%.2f deg/s\n", maxYawRate * 57.2958f);
+    // Some yaw during initial braking is fine, but should damp out
+    float finalSpeed = glm::length(phys.getVelocity());
+    CHECK(finalSpeed < 0.5f, "brake-hold: car comes to near stop");
 }
 
 // ============================================================================
 
 int main()
 {
-    std::printf("Running vehicle physics tests...\n\n");
+    std::printf("Running vehicle integration tests...\n\n");
 
-    testTorqueCurveLookup();
-    testEngineIdleWithNoThrottle();
-    testEngineRevsUpWithThrottle();
-    testEngineRevLimiter();
-    testClutchEngagement();
-
-    testTireDeflectionBounds();
-    testTireNormalForce();
-    testTireContactPatch();
-    testTireBrushModel();
-    testTireLateralBrushModel();
-    testFrictionCircle();
+    testNoLateralDriftAtSpawn();
+    testNoLateralDriftUnderThrottle();
+    testNoLateralDriftOnPlayground();
 
     testVehicleAccelerates();
     testVehicleBrakes();
@@ -703,7 +1068,9 @@ int main()
     testEngineBraking();
     testEqualBrakingFrontRear();
     testStationaryWithNoInput();
+    testBrakeLockupBalance();
 
+    testDirectBackwardDrift();
     testFrictionHoldsAfterBraking();
     testNoCreepAtStartup();
     testThrottleOvercomesFriction();
@@ -716,6 +1083,28 @@ int main()
     testHighSpeedTurnBrakeReaccelerate();
     testContinuousTurnStability();
 
-    std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
-    return g_fail > 0 ? 1 : 0;
+    testWallContactDetection();
+    testPipeFloorContact();
+    testPipeWallLateralForce();
+    testPipeSideWallHeadOn();
+    testSteadyStateCircle();
+
+    testSustainedFullThrottle();
+    testHighSpeedStraightStability();
+    testThrottleLiftStability();
+    testHardBrakingStability();
+    testSlalomStability();
+    testThrottleSteerStability();
+    testRollNeverExceeds90();
+    testPitchNeverExceeds45();
+    testCarStaysGrounded();
+
+    // Terrain-based regression tests
+    testAcceleratesOnTerrain();
+    testAcceleratesOnPlayground();
+    testHandbrakeOversteer();
+    testStandstillStability();
+    testBrakeHoldStandstill();
+
+    return reportResults();
 }

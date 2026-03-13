@@ -1,4 +1,5 @@
-#include "Renderer.h"
+#include "Renderer.hpp"
+#include "Scenario.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 #include <fstream>
@@ -93,71 +94,19 @@ static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
     }
 }
 
-// Cosine-profiled bump mesh: unit template [-1,1] in X and Z, [0,1] in Y.
-// Y follows 0.5*(1+cos(pi*z)) so it peaks at center (z=0) and fades to 0 at edges.
-// Scaled per-instance to actual bump dimensions via model matrix.
-static void makeBumpMesh(int zSegs, glm::vec4 col, VList& verts, IList& idx)
-{
-    const float PI = 3.14159265f;
-    uint32_t base = (uint32_t)verts.size();
-
-    // Top surface: 2 columns (x=-1, x=1), zSegs+1 rows
-    for (int j = 0; j <= zSegs; ++j) {
-        float t = (float)j / zSegs;
-        float z = -1.f + 2.f * t;
-        float y = 0.5f * (1.f + std::cos(PI * z));
-        float dydz = -0.5f * PI * std::sin(PI * z);
-        glm::vec3 normal = glm::normalize(glm::vec3{0.f, 1.f, -dydz});
-        verts.push_back({{-1.f, y, z}, normal, col});
-        verts.push_back({{ 1.f, y, z}, normal, col});
-    }
-    for (int j = 0; j < zSegs; ++j) {
-        uint32_t bl = base + j * 2;
-        uint32_t br = bl + 1, tl = bl + 2, tr = bl + 3;
-        idx.insert(idx.end(), {bl, br, tr, bl, tr, tl});
-    }
-
-    // Left side wall (x=-1, facing -X)
-    uint32_t sBase = (uint32_t)verts.size();
-    glm::vec3 leftN{-1.f, 0.f, 0.f};
-    for (int j = 0; j <= zSegs; ++j) {
-        float t = (float)j / zSegs;
-        float z = -1.f + 2.f * t;
-        float y = 0.5f * (1.f + std::cos(PI * z));
-        verts.push_back({{-1.f, 0.f, z}, leftN, col});
-        verts.push_back({{-1.f, y,   z}, leftN, col});
-    }
-    for (int j = 0; j < zSegs; ++j) {
-        uint32_t b0 = sBase + j * 2, t0 = b0 + 1, b1 = b0 + 2, t1 = b0 + 3;
-        idx.insert(idx.end(), {b0, b1, t1, b0, t1, t0});
-    }
-
-    // Right side wall (x=1, facing +X)
-    sBase = (uint32_t)verts.size();
-    glm::vec3 rightN{1.f, 0.f, 0.f};
-    for (int j = 0; j <= zSegs; ++j) {
-        float t = (float)j / zSegs;
-        float z = -1.f + 2.f * t;
-        float y = 0.5f * (1.f + std::cos(PI * z));
-        verts.push_back({{1.f, 0.f, z}, rightN, col});
-        verts.push_back({{1.f, y,   z}, rightN, col});
-    }
-    for (int j = 0; j < zSegs; ++j) {
-        uint32_t b0 = sBase + j * 2, t0 = b0 + 1, b1 = b0 + 2, t1 = b0 + 3;
-        idx.insert(idx.end(), {b1, b0, t0, b1, t0, t1});
-    }
-}
+// (Bump mesh functions removed — terrain is now a single heightmap mesh)
 
 static void makeGround(float halfSize, VList& verts, IList& idx)
 {
     glm::vec4 col{ 0.4f, 0.45f, 0.3f, 0.f };
     glm::vec3 n{ 0, 1, 0 };
     float s = halfSize;
+    float y = -6.f;  // below deepest terrain feature (bowl at -5m)
     uint32_t b = (uint32_t)verts.size();
-    verts.push_back({{ -s, 0,  s }, n, col });
-    verts.push_back({{  s, 0,  s }, n, col });
-    verts.push_back({{  s, 0, -s }, n, col });
-    verts.push_back({{ -s, 0, -s }, n, col });
+    verts.push_back({{ -s, y,  s }, n, col });
+    verts.push_back({{  s, y,  s }, n, col });
+    verts.push_back({{  s, y, -s }, n, col });
+    verts.push_back({{ -s, y, -s }, n, col });
     idx.insert(idx.end(), { b, b+1, b+2, b, b+2, b+3 });
 }
 
@@ -587,11 +536,7 @@ bool Renderer::init(const VulkanContext& ctx)
         makeBox(Vehicle::BODY_HALF_W, 0.02f, 0.08f, sfCol, v, i);
     });
 
-    // Cosine-profiled bump: unit template scaled per-instance
-    glm::vec4 bumpCol { 0.85f, 0.75f, 0.15f, 1.f };
-    unitBump_ = record([&](VList& v, IList& i){
-        makeBumpMesh(16, bumpCol, v, i);
-    });
+    // (Bump unit meshes removed — terrain is now a single heightmap mesh)
 
     // ---- Upload scene geometry ----
     {
@@ -649,6 +594,69 @@ bool Renderer::init(const VulkanContext& ctx)
     return true;
 }
 
+// ---- terrain upload ---------------------------------------------------------
+
+void Renderer::uploadTerrain(const VulkanContext& ctx, const Terrain& terrain)
+{
+    VList verts;
+    IList indices;
+    constexpr int N = Terrain::N;
+
+    // Build vertex grid
+    verts.reserve(N * N);
+    for (int iz = 0; iz < N; ++iz) {
+        for (int ix = 0; ix < N; ++ix) {
+            float x = terrain.worldX(ix);
+            float z = terrain.worldZ(iz);
+            float h = terrain.height(ix, iz);
+            glm::vec3 normal = terrain.normalAt(x, z);
+            glm::vec4 color = Terrain::surfaceColor(terrain.surfaceAt(ix, iz));
+            verts.push_back({{x, h, z}, normal, color});
+        }
+    }
+
+    // Build index buffer (two triangles per cell)
+    indices.reserve((N - 1) * (N - 1) * 6);
+    for (int iz = 0; iz < N - 1; ++iz) {
+        for (int ix = 0; ix < N - 1; ++ix) {
+            uint32_t bl = iz * N + ix;
+            uint32_t br = bl + 1;
+            uint32_t tl = bl + N;
+            uint32_t tr = tl + 1;
+            indices.insert(indices.end(), {bl, br, tr, bl, tr, tl});
+        }
+    }
+
+    terrainIdxCount_ = (uint32_t)indices.size();
+
+    // Upload vertex buffer
+    {
+        VkDeviceSize vSz = verts.size() * sizeof(Vertex);
+        terrainVbuf_ = ctx.allocBuffer(vSz,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            terrainVmem_);
+        void* p; vkMapMemory(dev_, terrainVmem_, 0, vSz, 0, &p);
+        std::memcpy(p, verts.data(), vSz);
+        vkUnmapMemory(dev_, terrainVmem_);
+    }
+
+    // Upload index buffer
+    {
+        VkDeviceSize iSz = indices.size() * sizeof(uint32_t);
+        terrainIbuf_ = ctx.allocBuffer(iSz,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            terrainImem_);
+        void* p; vkMapMemory(dev_, terrainImem_, 0, iSz, 0, &p);
+        std::memcpy(p, indices.data(), iSz);
+        vkUnmapMemory(dev_, terrainImem_);
+    }
+
+    std::printf("Terrain: %zu verts, %zu indices (%u triangles)\n",
+                verts.size(), indices.size(), terrainIdxCount_ / 3);
+}
+
 // ---- draw ------------------------------------------------------------------
 
 void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
@@ -668,19 +676,6 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
     push(glm::mat4(1.f));
     drawSlice(ground_);
 
-    // Tire trails (on ground)
-    if (hasTrails && trailIdxCount_ > 0) {
-        push(glm::mat4(1.f));
-        VkDeviceSize trailOff = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &trailVbuf_, &trailOff);
-        vkCmdBindIndexBuffer(cmd, trailIbuf_, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, trailIdxCount_, 1, 0, 0, 0);
-
-        // Re-bind scene buffers
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &trailOff);
-        vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
-    }
-
     // Ground labels (on ground, before vehicle so they're under it)
     if (labelIdxCount_ > 0) {
         push(glm::mat4(1.f));
@@ -694,12 +689,29 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
     }
 
-    // Wheels, rims, and axles (draw before translucent body so they're visible through it)
+    // Terrain heightmap mesh (opaque, drawn before translucent vehicle)
+    if (terrainIdxCount_ > 0) {
+        push(glm::mat4(1.f));
+        VkDeviceSize tOff = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &terrainVbuf_, &tOff);
+        vkCmdBindIndexBuffer(cmd, terrainIbuf_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, terrainIdxCount_, 1, 0, 0, 0);
+
+        // Re-bind scene buffers
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &tOff);
+        vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
+    }
+
+    // Wheels, rims, and axles (after bumps so tires blend over obstacles,
+    // before translucent body so they're visible through it)
     for (int i = 0; i < 4; ++i) {
-        glm::mat4 wheelRot = glm::mat4(veh.bodyRotation);
+        glm::mat4 wheelRot;
         if (i < 2) {
-            glm::vec3 bodyUp = veh.bodyRotation[1];
-            wheelRot = glm::rotate(wheelRot, veh.frontSteerAngle, bodyUp);
+            // Steering in body-local frame (rotate around local Y), then to world
+            glm::mat4 localSteer = glm::rotate(glm::mat4(1.f), veh.frontSteerAngle, {0,1,0});
+            wheelRot = glm::mat4(veh.bodyRotation) * localSteer;
+        } else {
+            wheelRot = glm::mat4(veh.bodyRotation);
         }
         glm::mat4 wheelT = glm::translate(glm::mat4(1.f), veh.wheelPos[i])
             * wheelRot;
@@ -728,19 +740,22 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
         }
     }
 
-    // Bumps — unit mesh scaled and rotated to actual dimensions
-    for (auto& b : playground.bumps) {
-        glm::mat4 bumpT = glm::translate(glm::mat4(1.f),
-            glm::vec3{b.xCenter, 0.f, b.zCenter})
-            * glm::rotate(glm::mat4(1.f), b.heading, glm::vec3{0.f, 1.f, 0.f})
-            * glm::scale(glm::mat4(1.f),
-            glm::vec3{b.halfWidth, b.height, b.halfLength});
-        push(bumpT);
-        drawSlice(unitBump_);
-    }
-
     // === TRANSLUCENT PASS (depth write OFF — so wheels/axles show through body) ===
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, translucentPipe_);
+
+    // Tire trails (drawn translucent after all opaque geometry so bumps/obstacles
+    // show through the semi-transparent skid marks correctly)
+    if (hasTrails && trailIdxCount_ > 0) {
+        push(glm::mat4(1.f));
+        VkDeviceSize trailOff = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &trailVbuf_, &trailOff);
+        vkCmdBindIndexBuffer(cmd, trailIbuf_, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, trailIdxCount_, 1, 0, 0, 0);
+
+        // Re-bind scene buffers
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &trailOff);
+        vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
+    }
 
     // Body
     glm::mat4 bodyM = glm::translate(glm::mat4(1.f), veh.position)
@@ -774,27 +789,30 @@ void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudDat
     float fh = (float)H;
 
     // --- Speedometer (right side) ---
+    // Layout (bottom-up): speed + km/h, RPM bar, gear indicator
+    float hudRight = fw - 10.f;   // right margin
     {
         char speedStr[16];
         int spd = (int)(std::abs(hud.speedKmh) + 0.5f);
         std::snprintf(speedStr, sizeof(speedStr), "%3d", spd);
-        float sx = fw - 190.f;
+        // 5×7 font at scale 3: each char = 18px wide. 3 chars = 54px + 2×3 gap = 60px
+        float sx = hudRight - 170.f;
         buildText(speedStr, sx, 4.f, 3.f, {1.f, 1.f, 1.f, 1.f}, hudV, hudI);
-        buildText("KM/H", sx + 60.f, 10.f, 2.f, {0.7f, 0.7f, 0.7f, 1.f}, hudV, hudI);
+        buildText("KM/H", sx + 62.f, 4.f, 1.5f, {0.6f, 0.6f, 0.6f, 1.f}, hudV, hudI);
     }
 
-    // --- Gear indicator ---
+    // --- Gear indicator (large, right of speed) ---
     {
-        char gearStr[8];
-        std::snprintf(gearStr, sizeof(gearStr), "G%d", hud.gear);
-        buildText(gearStr, fw - 120.f, 10.f, 2.f, {0.9f, 0.9f, 0.3f, 1.f}, hudV, hudI);
+        char gearStr[4];
+        std::snprintf(gearStr, sizeof(gearStr), "%d", hud.gear);
+        buildText(gearStr, hudRight - 30.f, 4.f, 3.f, {0.9f, 0.9f, 0.3f, 1.f}, hudV, hudI);
     }
 
     // --- RPM bar ---
     {
-        float barX = fw - 190.f;
-        float barY = 28.f;
-        float barW = 180.f;
+        float barW = 170.f;
+        float barX = hudRight - barW;
+        float barY = 30.f;
         float barH = 8.f;
 
         buildRect(barX, barY, barW, barH, {0.15f, 0.15f, 0.15f, 1.f}, hudV, hudI);
@@ -877,13 +895,14 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
 
     // Build and upload ground label geometry
     labelIdxCount_ = 0;
-    if (!playground.labels.empty()) {
+    auto& terrainLabels = playground.terrain.labels();
+    if (!terrainLabels.empty()) {
         VList labelV;
         IList labelI;
         glm::vec4 labelCol{1.f, 1.f, 1.f, 0.9f};  // white, slightly transparent
         float pixelSize = 0.12f;  // 12cm per pixel — readable from above
 
-        for (auto& lbl : playground.labels) {
+        for (auto& lbl : terrainLabels) {
             buildWorldText(lbl.text, lbl.position, lbl.heading, pixelSize, labelCol, labelV, labelI);
         }
 
@@ -916,6 +935,11 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
     glm::vec3 up    = veh.bodyRotation[1];
     glm::vec3 fwd   = veh.bodyRotation[2];
 
+    // Horizon-level directions: heading-only (no pitch/roll) for top views
+    glm::vec3 hFwd   = glm::normalize(glm::vec3{fwd.x, 0.f, fwd.z});
+    glm::vec3 hRight = glm::normalize(glm::vec3{right.x, 0.f, right.z});
+    glm::vec3 hUp    = {0.f, 1.f, 0.f};
+
     auto fixDepth = [](glm::mat4& p) {
         for (int col = 0; col < 4; ++col)
             p[col][2] = 0.5f * p[col][2] + 0.5f * p[col][3];
@@ -946,18 +970,18 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
         return vp;
     };
 
-    // Top-left: BEHIND view
+    // Top-left: BEHIND view (horizon-level, no pitch/roll tilt)
     quads[0] = { 0, 0, hw - GAP, hh - GAP,
         fixMirror(vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
-        glm::lookAt(pos - fwd * 10.f,
-                     lookTarget, up))
+        glm::lookAt(pos - hFwd * 10.f,
+                     lookTarget, hUp))
     };
 
-    // Top-right: SIDE view
+    // Top-right: SIDE view (horizon-level, no pitch/roll tilt)
     quads[1] = { hw + GAP, 0, hw - GAP, hh - GAP,
         fixMirror(vkOrtho(-range*aspQ, range*aspQ, -range, range, 0.1f, 100.f) *
-        glm::lookAt(pos + right * 10.f,
-                     lookTarget, up))
+        glm::lookAt(pos + hRight * 10.f,
+                     lookTarget, hUp))
     };
 
     // Bottom-left: CHASE CAM — low angle behind the car
@@ -1006,6 +1030,15 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
     }
 
     // HUD overlay (full-screen, on top of everything)
+    // Clear depth so HUD is never occluded by scene geometry
+    VkClearAttachment depthClear{};
+    depthClear.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    depthClear.clearValue.depthStencil = {1.f, 0};
+    VkClearRect clearRect{};
+    clearRect.rect = {{0, 0}, {W, H}};
+    clearRect.layerCount = 1;
+    vkCmdClearAttachments(cmd, 1, &depthClear, 1, &clearRect);
+
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
     drawHud(cmd, W, H, hud);
 }
@@ -1014,6 +1047,10 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
 
 void Renderer::shutdown(VkDevice dev)
 {
+    if (terrainIbuf_) vkDestroyBuffer(dev, terrainIbuf_, nullptr);
+    if (terrainImem_) vkFreeMemory   (dev, terrainImem_, nullptr);
+    if (terrainVbuf_) vkDestroyBuffer(dev, terrainVbuf_, nullptr);
+    if (terrainVmem_) vkFreeMemory   (dev, terrainVmem_, nullptr);
     vkDestroyBuffer(dev, labelIbuf_, nullptr);
     vkFreeMemory   (dev, labelImem_, nullptr);
     vkDestroyBuffer(dev, labelVbuf_, nullptr);

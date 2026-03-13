@@ -56,6 +56,18 @@ set(SOURCES
     src/VulkanContext.cpp
     src/Renderer.cpp
     src/VehiclePhysics.cpp
+    src/AudioEngine.cpp
+    src/Terrain.cpp
+    src/Tire.cpp
+    src/BrushTire.cpp
+    src/LuGreTire.cpp
+    src/Wheel.cpp
+    src/Engine.cpp
+    src/Drivetrain.cpp
+    src/Body.cpp
+    src/Subframe.cpp
+    src/TireTrail.cpp
+    src/Scenario.cpp
 )
 
 add_executable(GRIP-Sim ${SOURCES})
@@ -90,12 +102,70 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
+# Timestamped build snapshots
+# ---------------------------------------------------------------------------
+# After each successful build, copy exe + shaders + SDL2 DLL into
+# builds/YYYY-MM-DD_HHMMSS/ so you can test older builds while work continues.
+
+add_custom_command(TARGET GRIP-Sim POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/SnapshotBuild.cmake
+        $<TARGET_FILE:GRIP-Sim>
+        ${CMAKE_BINARY_DIR}/shaders
+        $<TARGET_FILE:SDL2::SDL2>
+        ${CMAKE_SOURCE_DIR}/builds
+    COMMENT "Creating timestamped build snapshot"
+)
+
+# ---------------------------------------------------------------------------
 # Tests (no Vulkan/SDL dependency — pure physics)
 # ---------------------------------------------------------------------------
+
+add_executable(EngineTest
+    tests/engine_test.cpp
+    src/Engine.cpp
+)
+target_include_directories(EngineTest PRIVATE src)
+target_link_libraries(EngineTest PRIVATE glm::glm)
+
+add_executable(TireTest
+    tests/tire_test.cpp
+    src/Terrain.cpp
+    src/Tire.cpp
+    src/BrushTire.cpp
+)
+target_include_directories(TireTest PRIVATE src)
+target_link_libraries(TireTest PRIVATE glm::glm)
 
 add_executable(VehicleTest
     tests/vehicle_test.cpp
     src/VehiclePhysics.cpp
+    src/Terrain.cpp
+    src/Tire.cpp
+    src/BrushTire.cpp
+    src/Wheel.cpp
+    src/Engine.cpp
+    src/Drivetrain.cpp
+    src/Body.cpp
+    src/Subframe.cpp
+    src/Scenario.cpp
 )
 target_include_directories(VehicleTest PRIVATE src)
 target_link_libraries(VehicleTest PRIVATE glm::glm)
+
+add_executable(ComponentTest
+    temp/component_test.cpp
+    temp/VehiclePhysicsComponent.cpp
+    temp/Mass.cpp
+    temp/AeroSurface.cpp
+    temp/Tire.cpp
+    temp/SimpleTire.cpp
+    temp/SpringDamper.cpp
+    temp/SuspensionCorner.cpp
+    temp/Subframe.cpp
+    temp/Body.cpp
+    temp/Drivetrain.cpp
+    temp/BrakeSystem.cpp
+    temp/Vehicle.cpp
+)
+target_include_directories(ComponentTest PRIVATE temp)
+target_link_libraries(ComponentTest PRIVATE glm::glm)
