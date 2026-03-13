@@ -166,24 +166,37 @@ void VehiclePhysics::update(float dt, const InputState& input)
     if (angMag > MAX_ANG_VEL)
         state_.angularVel *= MAX_ANG_VEL / angMag;
 
-    // Body-frame angular velocity → Euler angle rates
-    state_.heading += state_.angularVel.y * dt;
-    state_.pitch   += state_.angularVel.x * dt;
-    state_.roll    += state_.angularVel.z * dt;
+    // --- Rotation update via Rodrigues' formula (gimbal-lock-free) ---
+    // Integrate body-frame angular velocity directly into the rotation matrix
+    // instead of through Euler angles, which break at pitch ≈ ±90°.
+    glm::vec3 dTheta = state_.angularVel * dt;
+    float angle = glm::length(dTheta);
+    if (angle > 1e-8f) {
+        float kx = dTheta.x / angle, ky = dTheta.y / angle, kz = dTheta.z / angle;
+        float c = std::cos(angle), s = std::sin(angle), t = 1.f - c;
+        // Rodrigues: R_delta = I + sin(θ)·K + (1-cos(θ))·K²
+        glm::mat3 dR(
+            glm::vec3(t*kx*kx + c,      t*kx*ky + kz*s,  t*kx*kz - ky*s),
+            glm::vec3(t*kx*ky - kz*s,   t*ky*ky + c,     t*ky*kz + kx*s),
+            glm::vec3(t*kx*kz + ky*s,   t*ky*kz - kx*s,  t*kz*kz + c)
+        );
+        state_.bodyRotation = state_.bodyRotation * dR;
 
-    // Rebuild rotation matrix from Euler angles
-    float ch = std::cos(state_.heading);
-    float sh = std::sin(state_.heading);
-    float cp = std::cos(state_.pitch);
-    float sp = std::sin(state_.pitch);
-    float cr = std::cos(state_.roll);
-    float sr = std::sin(state_.roll);
+        // Re-orthogonalize (Gram-Schmidt) to prevent drift over time
+        glm::vec3 x = state_.bodyRotation[0];
+        glm::vec3 y = state_.bodyRotation[1];
+        glm::vec3 z = state_.bodyRotation[2];
+        x = glm::normalize(x);
+        y = glm::normalize(y - glm::dot(y, x) * x);
+        z = glm::cross(x, y);
+        state_.bodyRotation = glm::mat3(x, y, z);
+    }
 
-    state_.bodyRotation = glm::mat3(
-        glm::vec3( ch*cr + sh*sp*sr, cp*sr, -sh*cr + ch*sp*sr),
-        glm::vec3(-ch*sr + sh*sp*cr, cp*cr,  sh*sr + ch*sp*cr),
-        glm::vec3( sh*cp,           -sp,     ch*cp)
-    );
+    // Extract Euler angles from rotation matrix (for display/HUD only)
+    // These are derived FROM the matrix, not used to rebuild it.
+    state_.pitch   = std::asin(std::clamp(-state_.bodyRotation[2][1], -1.f, 1.f));
+    state_.heading = std::atan2(state_.bodyRotation[2][0], state_.bodyRotation[2][2]);
+    state_.roll    = std::atan2(state_.bodyRotation[0][1], state_.bodyRotation[1][1]);
 }
 
 // ---------------------------------------------------------------------------

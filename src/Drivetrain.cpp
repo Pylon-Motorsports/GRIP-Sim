@@ -22,8 +22,9 @@ void Drivetrain::autoShift(float rpm) {
 }
 
 void Drivetrain::reset() {
-    currentGear = 0;
-    engineRpm   = idleRpm;
+    currentGear   = 0;
+    engineRpm     = idleRpm;
+    smoothFwdSpeed_ = 0.f;
 }
 
 Drivetrain::Output Drivetrain::update(float throttle, float vehicleFwdSpeed,
@@ -33,8 +34,11 @@ Drivetrain::Output Drivetrain::update(float throttle, float vehicleFwdSpeed,
     float gearRatio    = gearRatios[currentGear];
     float overallRatio = gearRatio * finalDriveRatio;
 
-    // Estimate engine RPM from vehicle speed
-    float wheelRps = std::abs(vehicleFwdSpeed) / std::max(tireRadius, 0.01f);
+    // Estimate engine RPM from vehicle speed.
+    // Smooth the speed input to prevent wild RPM swings during tumbling
+    // (body frame rotation causes forward speed projection to oscillate).
+    smoothFwdSpeed_ += (vehicleFwdSpeed - smoothFwdSpeed_) * 0.15f;
+    float wheelRps = std::abs(smoothFwdSpeed_) / std::max(tireRadius, 0.01f);
     float wheelRpm = wheelRps * 60.f / (2.f * 3.14159f);
     engineRpm = std::max(idleRpm, wheelRpm * overallRatio);
 

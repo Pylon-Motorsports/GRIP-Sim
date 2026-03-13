@@ -41,6 +41,7 @@ public:
     void reset();
 
 private:
+    float smoothFwdSpeed_ = 0.f;   // smoothed forward speed (prevents RPM spikes during tumbling)
     float engineTorqueAtRpm(float rpm) const;
     void autoShift(float rpm);
 };
