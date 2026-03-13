@@ -146,3 +146,10 @@ add_executable(ComponentTest
 )
 target_include_directories(ComponentTest PRIVATE src tests)
 target_link_libraries(ComponentTest PRIVATE glm::glm)
+
+add_executable(DrivingTest
+    tests/driving_test.cpp
+    ${PHYSICS_SOURCES}
+)
+target_include_directories(DrivingTest PRIVATE src tests)
+target_link_libraries(DrivingTest PRIVATE glm::glm)

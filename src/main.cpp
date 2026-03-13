@@ -86,21 +86,38 @@ static std::vector<CollisionContact> checkBodyCollisions(
     return contacts;
 }
 
-// Ground clamp: prevent vehicle from falling through terrain.
+// Ground clamp: safety net to prevent vehicle from falling through terrain.
+// The springs + body collision handle normal ground contact; this only catches
+// catastrophic penetration (e.g., spawning inside terrain or physics explosion).
 static void groundClamp(VehiclePhysics& physics, const Terrain& terrain)
 {
     auto& st = physics.mutableState();
-
-    // Check the lowest point of the body (bottom center)
     float groundH = terrain.heightAt(st.position.x, st.position.z);
 
-    // Minimum vehicle height: tire radius (wheels touch ground)
-    float minY = groundH + 0.31f;  // tire radius
+    // Body bottom is ~0.25m above vehicle origin (CG at 0.35, collider bottom at -0.10).
+    // Only clamp if the body would be fully buried in terrain.
+    float minY = groundH - 0.10f;
     if (st.position.y < minY) {
         st.position.y = minY;
         if (st.velocity.y < 0.f)
             st.velocity.y = 0.f;
     }
+}
+
+// Initialize the vehicle at the correct equilibrium height above terrain.
+static void initVehiclePosition(VehiclePhysics& physics, const Terrain& terrain)
+{
+    auto& st = physics.mutableState();
+    float groundH = terrain.heightAt(st.position.x, st.position.z);
+
+    // Equilibrium: springs compressed by weight → compression = mg/(4k)
+    // At rest, tire bottom = ground, tire center = ground + radius,
+    // vehicle origin = tire center - compression (springs push body up, wheel stays on ground)
+    float tireR = 0.31f;
+    float mass  = 1300.f;
+    float springRate = 35000.f;
+    float eqComp = mass * 9.81f / (4.f * springRate);
+    st.position.y = groundH + tireR - eqComp;
 }
 
 // Fill the Vehicle rendering struct from physics state + component tree.
@@ -173,6 +190,12 @@ int main(int /*argc*/, char** /*argv*/)
     VehiclePhysics physics;
     physics.init();
 
+    // Build the playground early so we can use terrain for init height
+    Playground playground = createPlayground();
+
+    // Place vehicle at correct equilibrium height above terrain
+    initVehiclePosition(physics, playground.terrain);
+
     AudioEngine audio;
     if (!audio.init())
         std::fprintf(stderr, "Audio init failed (continuing without sound)\n");
@@ -180,8 +203,6 @@ int main(int /*argc*/, char** /*argv*/)
     Vehicle vehicle;
     TireTrails tireTrails;
 
-    // Build the playground
-    Playground playground = createPlayground();
     renderer.uploadTerrain(ctx, playground.terrain);
 
     // Try to open a game controller
@@ -223,6 +244,7 @@ int main(int /*argc*/, char** /*argv*/)
                 || (e.type == SDL_CONTROLLERBUTTONDOWN
                     && e.cbutton.button == SDL_CONTROLLER_BUTTON_START)) {
                 physics.reset();
+                initVehiclePosition(physics, playground.terrain);
                 tireTrails.clear();
                 for (float& c : prevComp) c = 0.f;
             }
