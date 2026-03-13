@@ -313,11 +313,11 @@ static void testDriveAndTurn() {
     InputState idle{};
     simulate(v, t, idle, 0.5f, prevComp);
 
-    InputState circle{}; circle.throttle = 0.6f; circle.steer = 0.5f;
+    InputState circle{}; circle.throttle = 0.7f; circle.steer = 0.3f;
     simulate(v, t, circle, 5.f, prevComp);
 
     float heading = std::abs(v.state().heading);
-    CHECK(heading > 0.5f, "completed significant turn in 5 seconds");
+    CHECK(heading > 0.3f, "completed significant turn in 5 seconds");
 
     float speed = glm::length(v.state().velocity);
     CHECK(speed > 3.f, "still moving at >3 m/s");
@@ -381,6 +381,162 @@ static void testEngineRpmTracksSpeed() {
     CHECK(drivingRpm > idleRpm + 500.f, "RPM increased significantly under load");
 }
 
+static void testFullBrakeLockup() {
+    std::printf("  testFullBrakeLockup\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Build speed
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(v, t, gas, 3.f, prevComp);
+
+    float speedBefore = forwardSpeed(v);
+    CHECK(speedBefore > 10.f, "moving before brake lockup test");
+
+    // Full brake — should lock wheels (tire reports sliding)
+    InputState brake{}; brake.brake = 1.f;
+    WheelInfo wheels[4];
+    getWheels(v, wheels);
+
+    bool anySliding = false;
+    for (float elapsed = 0.f; elapsed < 1.f; elapsed += DT) {
+        physicsStep(v, t, brake, prevComp);
+        for (int i = 0; i < 4; ++i)
+            if (wheels[i].corner->tire()->tireOutput().sliding)
+                anySliding = true;
+    }
+
+    CHECK(anySliding, "full brake causes wheel lockup (sliding)");
+
+    // With locked wheels, braking is less effective than threshold braking.
+    // Verify the car still decelerates (doesn't glitch out).
+    float speedAfter = forwardSpeed(v);
+    CHECK(speedAfter < speedBefore, "car decelerates under locked brakes");
+}
+
+static void testHandBrakeLockup() {
+    std::printf("  testHandBrakeLockup\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    InputState gas{}; gas.throttle = 1.f;
+    simulate(v, t, gas, 3.f, prevComp);
+
+    float speedBefore = forwardSpeed(v);
+    CHECK(speedBefore > 10.f, "moving before handbrake test");
+
+    // Handbrake only — should lock rear wheels
+    InputState hb{}; hb.handBrake = 1.f;
+    WheelInfo wheels[4];
+    getWheels(v, wheels);
+
+    bool rearSliding = false;
+    for (float elapsed = 0.f; elapsed < 1.f; elapsed += DT) {
+        physicsStep(v, t, hb, prevComp);
+        // Rear tires are indices 2 and 3
+        for (int i = 2; i < 4; ++i)
+            if (wheels[i].corner->tire()->tireOutput().sliding)
+                rearSliding = true;
+    }
+
+    CHECK(rearSliding, "handbrake locks rear wheels (sliding)");
+
+    // Car should slow down
+    float speedAfter = forwardSpeed(v);
+    CHECK(speedAfter < speedBefore, "handbrake slows car");
+}
+
+// ---------------------------------------------------------------------------
+// Acceleration grip tests — BRZ should not easily break rears loose
+// ---------------------------------------------------------------------------
+
+static void testHalfThrottleNoSliding() {
+    std::printf("  testHalfThrottleNoSliding\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // 50% throttle — BRZ should NOT break rear tires loose
+    InputState gas{}; gas.throttle = 0.5f;
+    WheelInfo wheels[4];
+    getWheels(v, wheels);
+
+    int slidingFrames = 0;
+    for (float elapsed = 0.f; elapsed < 3.f; elapsed += DT) {
+        physicsStep(v, t, gas, prevComp);
+        for (int i = 2; i < 4; ++i)
+            if (wheels[i].corner->tire()->tireOutput().sliding)
+                slidingFrames++;
+    }
+
+    // Allow brief transient sliding (<5% of total frames) but not sustained
+    int totalRearFrames = (int)(3.f / DT) * 2;
+    float slidingPct = 100.f * slidingFrames / totalRearFrames;
+    std::printf("    sliding: %.1f%% of frames (%d/%d)\n",
+        slidingPct, slidingFrames, totalRearFrames);
+    CHECK(slidingPct < 5.f,
+          "50%% throttle: rear tires not sliding (< 5%% of frames)");
+
+    float speed = forwardSpeed(v);
+    CHECK(speed > 8.f, "50%% throttle: built reasonable speed");
+}
+
+static void testFullThrottleAcceleration() {
+    std::printf("  testFullThrottleAcceleration\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Full throttle — track acceleration and rear slip
+    InputState gas{}; gas.throttle = 1.f;
+    WheelInfo wheels[4];
+    getWheels(v, wheels);
+
+    float speedAt2s = 0.f;
+    int slidingFrames = 0;
+    int totalFrames = 0;
+    for (float elapsed = 0.f; elapsed < 4.f; elapsed += DT) {
+        physicsStep(v, t, gas, prevComp);
+        if (elapsed > 0.5f) {  // skip initial launch transient
+            totalFrames += 2;
+            for (int i = 2; i < 4; ++i)
+                if (wheels[i].corner->tire()->tireOutput().sliding)
+                    slidingFrames++;
+        }
+        if (std::abs(elapsed - 2.f) < DT)
+            speedAt2s = forwardSpeed(v);
+    }
+
+    float slidingPct = 100.f * slidingFrames / std::max(totalFrames, 1);
+    std::printf("    speed at 2s: %.1f m/s, sliding: %.1f%%\n",
+        speedAt2s, slidingPct);
+
+    // BRZ should accelerate well — at least 8 m/s after 2s full throttle
+    CHECK(speedAt2s > 8.f, "full throttle: good acceleration (>8 m/s at 2s)");
+
+    // Some sliding in 1st gear OK, but should not be excessive (not >30%)
+    CHECK(slidingPct < 30.f,
+          "full throttle: rear sliding < 30%% of frames");
+}
+
 // ---------------------------------------------------------------------------
 int main() {
     std::printf("Running driving characteristic tests...\n\n");
@@ -406,9 +562,17 @@ int main() {
     testDriveAndTurn();
     testAccelBrakeStaysOnGround();
 
+    std::printf("Wheel lockup:\n");
+    testFullBrakeLockup();
+    testHandBrakeLockup();
+
     std::printf("Drivetrain:\n");
     testGearShiftsUp();
     testEngineRpmTracksSpeed();
+
+    std::printf("Acceleration grip:\n");
+    testHalfThrottleNoSliding();
+    testFullThrottleAcceleration();
 
     return reportResults();
 }

@@ -7,6 +7,7 @@ struct Vehicle {
     float     pitch    { 0.f };            // radians, positive = nose up
     float     roll     { 0.f };            // radians, positive = right side down
     glm::mat3 bodyRotation { 1.f };        // body-local to world rotation (from physics)
+    glm::vec3 velocity { 0.f, 0.f, 0.f }; // world-space velocity (for chase cam)
     glm::vec3 wheelPos[4]{};               // world positions of wheel/tire centers
     glm::vec3 mountPos[4]{};               // world positions of suspension mount points
     float     frontSteerAngle { 0.f };     // front wheel steering angle (radians)
@@ -18,10 +19,10 @@ struct Vehicle {
     float     wheelContactWidth[4]{};      // contact patch width (m)
 
     // Body (box)
-    static constexpr float BODY_HALF_W = 0.30f;   // 0.60 m wide
-    static constexpr float BODY_HALF_H = 0.25f;   // 0.50 m tall
+    static constexpr float BODY_HALF_W = 0.80f;   // 1.60 m wide (BRZ ~1.78m)
+    static constexpr float BODY_HALF_H = 0.25f;   // (used by collision, not visual)
     static constexpr float BODY_HALF_L = 1.30f;   // 2.60 m long
-    static constexpr float BODY_Y      = 0.55f;   // center-of-body height
+    static constexpr float BODY_Y      = 0.25f;   // visual body center offset above origin
 
     // Wheels (rim — visual only)
     static constexpr float HALF_TRACK   = 0.75f;  // CG to wheel center (X)

@@ -53,9 +53,9 @@ ComponentOutput VehiclePhysicsComponent::update(const ComponentInput& input) {
         ComponentInput childInput = makeChildInput(input, *child);
         ComponentOutput childOut  = child->update(childInput);
 
-        // Moment arm: child's attachment point is relative to this component,
-        // so it IS the offset vector for torque calculation.
-        lastOutput_.torque += glm::cross(child->attachmentPoint(), childOut.force);
+        // Moment arm: rotate child's body-local offset to world frame
+        // before crossing with the world-space force.
+        lastOutput_.torque += glm::cross(input.bodyRotation * child->attachmentPoint(), childOut.force);
         lastOutput_.force  += childOut.force;
         lastOutput_.torque += childOut.torque;
     }

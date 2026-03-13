@@ -94,6 +94,225 @@ static void makeCylinder(float radius, float halfW, int segs, glm::vec4 col,
     }
 }
 
+// Car body: base box with chamfered corners + trapezoid cabin.
+// Coordinates in body-local space (drawn at BODY_Y offset).
+// This shape is also the collision volume (see Body::colliderCorners).
+//
+// Base box: full car width (covers tires), floor to beltline,
+//           front/rear bumper overhangs, chamfered lower corners.
+// Cabin:    windshield slopes from A-pillar to roof, rear window slopes
+//           from roof to rear of body.  Sides taper inward so roof
+//           is narrower than body.
+static void makeCarBody(glm::vec4 col, VList& verts, IList& idx)
+{
+    // --- Dimensions (body-local coords) ---
+    constexpr float W     = 0.88f;   // half-width
+    constexpr float bot   = -0.25f;  // floor pan
+    constexpr float belt  =  0.30f;  // beltline
+    constexpr float front =  1.95f;  // front bumper
+    constexpr float rear  = -1.85f;  // rear bumper
+    constexpr float C     =  0.15f;  // corner chamfer
+    constexpr float B     =  0.12f;  // bottom bevel height
+
+    // Cabin
+    constexpr float roofY     = 0.75f;
+    constexpr float roofHW    = 0.72f;
+    constexpr float beltHW    = 0.85f;
+    constexpr float aZ        = 0.85f;   // A-pillar
+    constexpr float wsTopZ    = 0.35f;   // windshield top
+    constexpr float roofRearZ = -0.85f;  // roof rear edge
+    constexpr float rwBaseZ   = -1.30f;  // rear window base
+
+    // Wheel arches
+    constexpr float archR = 0.38f;
+    constexpr float fwZ   = 1.03f;   // front wheel Z
+    constexpr float rwZ   = -0.97f;  // rear wheel Z
+    constexpr int   ARCH_SEGS = 8;
+    constexpr float PI = 3.14159265f;
+
+    auto face = [&](glm::vec3 p0, glm::vec3 p1, glm::vec3 p2, glm::vec3 p3,
+                    glm::vec3 n, glm::vec4 c) {
+        uint32_t b = (uint32_t)verts.size();
+        verts.push_back({ p0, n, c });
+        verts.push_back({ p1, n, c });
+        verts.push_back({ p2, n, c });
+        verts.push_back({ p3, n, c });
+        idx.insert(idx.end(), { b, b+1, b+2, b, b+2, b+3 });
+    };
+
+    auto tri = [&](glm::vec3 p0, glm::vec3 p1, glm::vec3 p2,
+                   glm::vec3 n, glm::vec4 c) {
+        uint32_t b = (uint32_t)verts.size();
+        verts.push_back({ p0, n, c });
+        verts.push_back({ p1, n, c });
+        verts.push_back({ p2, n, c });
+        idx.insert(idx.end(), { b, b+1, b+2 });
+    };
+
+    // Plan-view octagon outline
+    float ox[8] = { -(W-C), (W-C),  W,       W,      (W-C), -(W-C), -W,      -W     };
+    float oz[8] = {  front, front,  front-C, rear+C,  rear,  rear,   rear+C,  front-C };
+    float by[8] = { bot+B, bot+B, bot, bot, bot+B, bot+B, bot, bot };
+
+    glm::vec4 bodyCol = col;
+
+    // --- Side faces: 6 short quads (skip right i=2, left i=6 — handled with arches) ---
+    for (int i = 0; i < 8; ++i) {
+        if (i == 2 || i == 6) continue;
+        int j = (i + 1) % 8;
+        float dx = ox[j] - ox[i];
+        float dz = oz[j] - oz[i];
+        float len = std::sqrt(dx*dx + dz*dz);
+        glm::vec3 n = (len > 0.001f) ? glm::vec3(dz/len, 0.f, -dx/len) : glm::vec3(0.f);
+        face({ox[i], by[i], oz[i]}, {ox[j], by[j], oz[j]},
+             {ox[j], belt, oz[j]}, {ox[i], belt, oz[i]}, n, bodyCol);
+    }
+
+    // --- Right side with wheel arches ---
+    // Arch curve: y = bot + archR * sin(π*t), z = wheelZ - archR + 2*archR*t
+    // Right side traverses front-to-rear (z decreasing), so t goes 1→0
+    {
+        glm::vec3 n {1, 0, 0};
+        auto panel = [&](float z0, float z1) {
+            face({W, bot, z0}, {W, bot, z1}, {W, belt, z1}, {W, belt, z0}, n, bodyCol);
+        };
+        auto arch = [&](float wheelZ) {
+            for (int s = 0; s < ARCH_SEGS; ++s) {
+                float t0 = 1.f - (float)s / ARCH_SEGS;
+                float t1 = 1.f - (float)(s+1) / ARCH_SEGS;
+                float z0 = wheelZ - archR + 2*archR*t0;
+                float z1 = wheelZ - archR + 2*archR*t1;
+                float y0 = bot + archR * std::sin(PI * t0);
+                float y1 = bot + archR * std::sin(PI * t1);
+                face({W, y0, z0}, {W, y1, z1}, {W, belt, z1}, {W, belt, z0}, n, bodyCol);
+            }
+        };
+        panel(front-C, fwZ+archR);   // front fender
+        arch(fwZ);                    // front wheel arch
+        panel(fwZ-archR, rwZ+archR);  // door
+        arch(rwZ);                    // rear wheel arch
+        panel(rwZ-archR, rear+C);     // rear quarter
+    }
+
+    // --- Left side with wheel arches (mirror: z increasing, rear to front) ---
+    {
+        glm::vec3 n {-1, 0, 0};
+        auto panel = [&](float z0, float z1) {
+            face({-W, bot, z0}, {-W, bot, z1}, {-W, belt, z1}, {-W, belt, z0}, n, bodyCol);
+        };
+        auto arch = [&](float wheelZ) {
+            for (int s = 0; s < ARCH_SEGS; ++s) {
+                float t0 = (float)s / ARCH_SEGS;
+                float t1 = (float)(s+1) / ARCH_SEGS;
+                float z0 = wheelZ - archR + 2*archR*t0;
+                float z1 = wheelZ - archR + 2*archR*t1;
+                float y0 = bot + archR * std::sin(PI * t0);
+                float y1 = bot + archR * std::sin(PI * t1);
+                face({-W, y0, z0}, {-W, y1, z1}, {-W, belt, z1}, {-W, belt, z0}, n, bodyCol);
+            }
+        };
+        panel(rear+C, rwZ-archR);     // rear quarter
+        arch(rwZ);                     // rear wheel arch
+        panel(rwZ+archR, fwZ-archR);   // door
+        arch(fwZ);                     // front wheel arch
+        panel(fwZ+archR, front-C);     // front fender
+    }
+
+    // --- Bottom face (octagon fan) ---
+    {
+        uint32_t center = (uint32_t)verts.size();
+        verts.push_back({{0.f, bot, 0.f}, {0,-1,0}, bodyCol});
+        uint32_t ring[8];
+        for (int i = 0; i < 8; ++i) {
+            ring[i] = (uint32_t)verts.size();
+            verts.push_back({{ox[i], by[i], oz[i]}, {0,-1,0}, bodyCol});
+        }
+        for (int i = 0; i < 8; ++i) {
+            int j = (i + 1) % 8;
+            idx.insert(idx.end(), { center, ring[j], ring[i] });
+        }
+    }
+
+    // --- Top face (beltline octagon) ---
+    {
+        uint32_t center = (uint32_t)verts.size();
+        verts.push_back({{0.f, belt, 0.f}, {0,1,0}, bodyCol});
+        uint32_t ring[8];
+        for (int i = 0; i < 8; ++i) {
+            ring[i] = (uint32_t)verts.size();
+            verts.push_back({{ox[i], belt, oz[i]}, {0,1,0}, bodyCol});
+        }
+        for (int i = 0; i < 8; ++i) {
+            int j = (i + 1) % 8;
+            idx.insert(idx.end(), { center, ring[i], ring[j] });
+        }
+    }
+
+    // --- Cabin ---
+    glm::vec4 glassCol { 0.10f, 0.12f, 0.20f, 0.45f };  // dark tinted glass
+    glm::vec4 roofCol  = col * 0.85f;  roofCol.a = col.a;
+
+    // Windshield
+    {
+        float dz = aZ - wsTopZ, dy = roofY - belt;
+        float len = std::sqrt(dz*dz + dy*dy);
+        glm::vec3 n = { 0.f, dz/len, dy/len };
+        face({-beltHW, belt, aZ}, { beltHW, belt, aZ},
+             { roofHW, roofY, wsTopZ}, {-roofHW, roofY, wsTopZ}, n, glassCol);
+    }
+
+    // Rear window
+    {
+        float dz = roofRearZ - rwBaseZ, dy = roofY - belt;
+        float len = std::sqrt(dz*dz + dy*dy);
+        glm::vec3 n = { 0.f, -dz/len, -dy/len };
+        face({ roofHW, roofY, roofRearZ}, {-roofHW, roofY, roofRearZ},
+             {-beltHW, belt, rwBaseZ}, { beltHW, belt, rwBaseZ}, n, glassCol);
+    }
+
+    // Roof
+    face({-roofHW, roofY, wsTopZ}, { roofHW, roofY, wsTopZ},
+         { roofHW, roofY, roofRearZ}, {-roofHW, roofY, roofRearZ}, {0,1,0}, roofCol);
+
+    // Side windows (glass)
+    face({ beltHW, belt, aZ}, { beltHW, belt, rwBaseZ},
+         { roofHW, roofY, roofRearZ}, { roofHW, roofY, wsTopZ}, {1,0,0}, glassCol);
+    face({-beltHW, belt, rwBaseZ}, {-beltHW, belt, aZ},
+         {-roofHW, roofY, wsTopZ}, {-roofHW, roofY, roofRearZ}, {-1,0,0}, glassCol);
+
+    // Fill panels (beltline, front fenders and rear quarters)
+    face({ W, belt, front-C}, { W, belt, aZ},
+         { beltHW, belt, aZ}, { W-C, belt, front}, {0,1,0}, bodyCol);
+    face({-W, belt, aZ}, {-W, belt, front-C},
+         {-(W-C), belt, front}, {-beltHW, belt, aZ}, {0,1,0}, bodyCol);
+    face({ W, belt, rwBaseZ}, { W, belt, rear+C},
+         { W-C, belt, rear}, { beltHW, belt, rwBaseZ}, {0,1,0}, bodyCol);
+    face({-W, belt, rear+C}, {-W, belt, rwBaseZ},
+         {-beltHW, belt, rwBaseZ}, {-(W-C), belt, rear}, {0,1,0}, bodyCol);
+
+    // --- Headlights (warm white, slightly in front of bumper face) ---
+    {
+        glm::vec4 hlCol {0.95f, 0.90f, 0.70f, 0.85f};
+        float z = front + 0.001f;
+        face({0.30f, 0.02f, z}, {0.60f, 0.02f, z},
+             {0.60f, 0.20f, z}, {0.30f, 0.20f, z}, {0,0,1}, hlCol);
+        face({-0.60f, 0.02f, z}, {-0.30f, 0.02f, z},
+             {-0.30f, 0.20f, z}, {-0.60f, 0.20f, z}, {0,0,1}, hlCol);
+    }
+
+    // --- Taillights (red, slightly behind rear bumper face) ---
+    {
+        glm::vec4 tlCol {0.90f, 0.10f, 0.10f, 0.85f};
+        float z = rear - 0.001f;
+        face({0.60f, 0.05f, z}, {0.30f, 0.05f, z},
+             {0.30f, 0.20f, z}, {0.60f, 0.20f, z}, {0,0,-1}, tlCol);
+        face({-0.30f, 0.05f, z}, {-0.60f, 0.05f, z},
+             {-0.60f, 0.20f, z}, {-0.30f, 0.20f, z}, {0,0,-1}, tlCol);
+    }
+
+    (void)tri;  // unused but kept for potential future use
+}
+
 // (Bump mesh functions removed — terrain is now a single heightmap mesh)
 
 static void makeGround(float halfSize, VList& verts, IList& idx)
@@ -436,10 +655,19 @@ bool Renderer::init(const VulkanContext& ctx)
 
     vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &pipeline_);
 
-    // Translucent pipeline: same as main but depth write OFF
+    // Translucent pipeline: depth write OFF, depth bias enabled (for trail decals)
     ds.depthWriteEnable = VK_FALSE;
+    rs.depthBiasEnable = VK_TRUE;
+    VkDynamicState dynStatesTranslucent[] = {
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS };
+    VkPipelineDynamicStateCreateInfo dynTranslucent{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynTranslucent.dynamicStateCount = 3;
+    dynTranslucent.pDynamicStates    = dynStatesTranslucent;
+    gp.pDynamicState = &dynTranslucent;
     vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, nullptr, &translucentPipe_);
     ds.depthWriteEnable = VK_TRUE;  // restore
+    rs.depthBiasEnable = VK_FALSE;
+    gp.pDynamicState = &dyn;
 
     vkDestroyShaderModule(dev, fragMod, nullptr);
     vkDestroyShaderModule(dev, vertMod, nullptr);
@@ -515,7 +743,7 @@ bool Renderer::init(const VulkanContext& ctx)
     glm::vec4 tireCol { 0.15f, 0.15f, 0.15f, 0.55f };  // dark rubber, translucent
 
     body_  = record([&](VList& v, IList& i){
-        makeBox(Vehicle::BODY_HALF_W, Vehicle::BODY_HALF_H, Vehicle::BODY_HALF_L, bodyCol, v, i);
+        makeCarBody(bodyCol, v, i);
     });
     rim_ = record([&](VList& v, IList& i){
         makeCylinder(Vehicle::RIM_RADIUS, Vehicle::RIM_HALF_W, 16, rimCol, v, i);
@@ -527,13 +755,13 @@ bool Renderer::init(const VulkanContext& ctx)
     // Axle template: thin cylinder along X, unit length (will be scaled per-axle)
     glm::vec4 axleCol { 0.4f, 0.4f, 0.45f, 0.4f };  // dark steel, translucent
     axle_ = record([&](VList& v, IList& i){
-        makeCylinder(0.015f, 0.5f, 8, axleCol, v, i);  // radius=1.5cm, half-length=0.5 (scaled)
+        makeCylinder(0.03f, 0.5f, 8, axleCol, v, i);  // radius=3cm, half-length=0.5 (scaled)
     });
 
-    // Subframe: flat box spanning the width between mount points
+    // Subframe: flat box spanning the full track width between mount points
     glm::vec4 sfCol { 0.6f, 0.3f, 0.1f, 0.5f };  // rusty orange, translucent
     subframe_ = record([&](VList& v, IList& i){
-        makeBox(Vehicle::BODY_HALF_W, 0.02f, 0.08f, sfCol, v, i);
+        makeBox(Vehicle::HALF_TRACK, 0.02f, 0.08f, sfCol, v, i);
     });
 
     // (Bump unit meshes removed — terrain is now a single heightmap mesh)
@@ -657,6 +885,79 @@ void Renderer::uploadTerrain(const VulkanContext& ctx, const Terrain& terrain)
                 verts.size(), indices.size(), terrainIdxCount_ / 3);
 }
 
+// ---- sprung chase camera ---------------------------------------------------
+
+void Renderer::updateChaseCam(float dt, const Vehicle& veh, const Terrain& terrain)
+{
+    constexpr float CHASE_DIST   = 6.f;   // meters behind
+    constexpr float CHASE_HEIGHT = 2.5f;  // meters above vehicle origin
+    constexpr float YAW_TAU      = 0.35f; // yaw spring time constant (seconds)
+    constexpr float POS_TAU      = 0.3f;  // position spring time constant
+    constexpr float CLIP_MARGIN  = 0.5f;  // minimum clearance above terrain
+    constexpr float RESET_DIST   = 20.f;  // re-init if car teleports
+
+    // Compute desired position from a heading
+    auto desiredPosFromHeading = [&](float h) {
+        float ch = std::cos(h), sh = std::sin(h);
+        glm::vec3 behind(-sh, 0.f, -ch);  // opposite to heading direction
+        return veh.position + behind * CHASE_DIST
+             + glm::vec3(0.f, CHASE_HEIGHT, 0.f);
+    };
+
+    // First frame or teleport (reset): snap to target instantly
+    if (!chaseCamInit_ ||
+        glm::length(chaseCamPos_ - veh.position) > RESET_DIST) {
+        chaseCamHeading_ = veh.heading;
+        chaseCamPos_ = desiredPosFromHeading(veh.heading);
+        chaseCamInit_ = true;
+        return;
+    }
+
+    if (dt <= 0.f) return;
+
+    // Target heading: direction of motion (XZ plane), falling back to
+    // vehicle heading at low speed for smooth standstill behavior.
+    float hzSpeed = std::sqrt(veh.velocity.x * veh.velocity.x
+                            + veh.velocity.z * veh.velocity.z);
+    float motionHeading = std::atan2(veh.velocity.x, veh.velocity.z);
+    constexpr float MOTION_MIN_SPEED = 2.f;  // m/s
+    constexpr float MOTION_FULL_SPEED = 6.f;
+    float motionBlend = std::clamp((hzSpeed - MOTION_MIN_SPEED)
+                                    / (MOTION_FULL_SPEED - MOTION_MIN_SPEED), 0.f, 1.f);
+    // Blend between vehicle heading (at rest) and motion heading (at speed)
+    float targetHeading;
+    {
+        float diff = motionHeading - veh.heading;
+        constexpr float PI  = 3.14159265f;
+        constexpr float TAU = 6.28318530f;
+        while (diff >  PI) diff -= TAU;
+        while (diff < -PI) diff += TAU;
+        targetHeading = veh.heading + diff * motionBlend;
+    }
+
+    // --- Spring heading toward target (shortest angular path) ---
+    float headingDiff = targetHeading - chaseCamHeading_;
+    // Wrap to [-π, π]
+    constexpr float PI  = 3.14159265f;
+    constexpr float TAU = 6.28318530f;
+    while (headingDiff >  PI) headingDiff -= TAU;
+    while (headingDiff < -PI) headingDiff += TAU;
+    float headingAlpha = 1.f - std::exp(-dt / YAW_TAU);
+    chaseCamHeading_ += headingDiff * headingAlpha;
+
+    // --- Spring position toward desired ---
+    glm::vec3 desiredPos = desiredPosFromHeading(chaseCamHeading_);
+    float posAlpha = 1.f - std::exp(-dt / POS_TAU);
+    chaseCamPos_ += (desiredPos - chaseCamPos_) * posAlpha;
+
+    // --- Anti-clip: push camera above terrain ---
+    float terrainH = terrain.heightAt(chaseCamPos_.x, chaseCamPos_.z);
+    float minY = terrainH + CLIP_MARGIN;
+    if (chaseCamPos_.y < minY) {
+        chaseCamPos_.y = minY;
+    }
+}
+
 // ---- draw ------------------------------------------------------------------
 
 void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
@@ -742,41 +1043,32 @@ void Renderer::drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle
 
     // === TRANSLUCENT PASS (depth write OFF — so wheels/axles show through body) ===
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, translucentPipe_);
+    vkCmdSetDepthBias(cmd, 0.f, 0.f, 0.f);  // default: no bias
 
-    // Tire trails (drawn translucent after all opaque geometry so bumps/obstacles
-    // show through the semi-transparent skid marks correctly)
+    // Tire trails — slight depth bias pushes them in front of coplanar terrain
     if (hasTrails && trailIdxCount_ > 0) {
+        vkCmdSetDepthBias(cmd, -2.f, 0.f, -2.f);
         push(glm::mat4(1.f));
         VkDeviceSize trailOff = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &trailVbuf_, &trailOff);
         vkCmdBindIndexBuffer(cmd, trailIbuf_, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, trailIdxCount_, 1, 0, 0, 0);
+        vkCmdSetDepthBias(cmd, 0.f, 0.f, 0.f);  // reset for body/subframes
 
         // Re-bind scene buffers
         vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf_, &trailOff);
         vkCmdBindIndexBuffer(cmd, ibuf_, 0, VK_INDEX_TYPE_UINT32);
     }
 
-    // Body
-    glm::mat4 bodyM = glm::translate(glm::mat4(1.f), veh.position)
+    // Body — offset upward by BODY_Y so body bottom aligns with mount points
+    glm::vec3 bodyCenter = veh.position
+        + veh.bodyRotation * glm::vec3(0.f, Vehicle::BODY_Y, 0.f);
+    glm::mat4 bodyM = glm::translate(glm::mat4(1.f), bodyCenter)
         * glm::mat4(veh.bodyRotation);
     push(bodyM);
     drawSlice(body_);
 
-    // Subframes
-    {
-        glm::vec3 fMid = (veh.mountPos[0] + veh.mountPos[1]) * 0.5f;
-        glm::mat4 sfFront = glm::translate(glm::mat4(1.f), fMid)
-            * glm::mat4(veh.bodyRotation);
-        push(sfFront);
-        drawSlice(subframe_);
-
-        glm::vec3 rMid = (veh.mountPos[2] + veh.mountPos[3]) * 0.5f;
-        glm::mat4 sfRear = glm::translate(glm::mat4(1.f), rMid)
-            * glm::mat4(veh.bodyRotation);
-        push(sfRear);
-        drawSlice(subframe_);
-    }
+    // (subframes removed — arches show wheels directly)
 }
 
 void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudData& hud)
@@ -869,7 +1161,8 @@ void Renderer::drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudDat
 void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
                     const Vehicle& veh, const HudData& hud,
                     const Playground& playground,
-                    const TrailGeometry* trails)
+                    const TrailGeometry* trails,
+                    float frameDt)
 {
     VkDeviceSize off = 0;
 
@@ -994,12 +1287,13 @@ void Renderer::draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
         };
     }
 
-    // Bottom-right: PERSPECTIVE
+    // Bottom-right: SPRUNG CHASE CAM — smoothly follows heading, ignores roll/pitch
     {
-        glm::vec3 camOff = glm::normalize(-fwd + right + up) * 6.f;
+        updateChaseCam(frameDt, veh, playground.terrain);
+        glm::vec3 chaseTgt = veh.position + glm::vec3(0.f, 0.5f, 0.f);
         quads[3] = { hw + GAP, hh + GAP, hw - GAP, hh - GAP,
-            fixMirror(vkPersp(glm::radians(45.f), aspQ, 0.1f, 300.f) *
-            glm::lookAt(pos + camOff, lookTarget, up))
+            fixMirror(vkPersp(glm::radians(55.f), aspQ, 0.1f, 500.f) *
+            glm::lookAt(chaseCamPos_, chaseTgt, glm::vec3{0.f, 1.f, 0.f}))
         };
     }
 

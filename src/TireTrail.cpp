@@ -9,7 +9,7 @@ void TireTrail::addPoint(const glm::vec3& wheelPos, float normalLoad,
     if (normalLoad <= 0.f) return;
 
     glm::vec3 groundPos = wheelPos;
-    groundPos.y = wheelPos.y - 0.30f + 0.008f;
+    groundPos.y = wheelPos.y - 0.30f + 0.025f;  // ~2.5cm above ground to clear terrain Z-fighting
 
     if (count_ > 0) {
         glm::vec3 last = points_[(head_ + count_ - 1) % MAX_POINTS].pos;
@@ -61,6 +61,12 @@ void TireTrail::buildGeometry(std::vector<Vertex>& verts, std::vector<uint32_t>&
     }
 
     for (int i = 0; i < count_ - 1; ++i) {
+        // Skip quad if consecutive points are too far apart (airborne gap)
+        const Point& a = points_[(head_ + i) % MAX_POINTS];
+        const Point& b = points_[(head_ + i + 1) % MAX_POINTS];
+        float dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
+        if (dx*dx + dz*dz > 1.f) continue;  // >1m gap = was airborne
+
         uint32_t bl = baseVert + i * 2;
         uint32_t br = bl + 1;
         uint32_t tl = bl + 2;

@@ -65,6 +65,15 @@ void AudioEngine::setTireSlip(float maxSlipRatio, float maxSlipAngleDeg)
     squealVol_.store(vol, std::memory_order_relaxed);
 }
 
+void AudioEngine::triggerCollision(float intensity)
+{
+    float clamped = std::clamp(intensity, 0.f, 1.f);
+    // Only trigger if louder than current ongoing impact
+    float current = impactTrigger_.load(std::memory_order_relaxed);
+    if (clamped > current)
+        impactTrigger_.store(clamped, std::memory_order_relaxed);
+}
+
 void AudioEngine::audioCallback(void* userdata, Uint8* stream, int len)
 {
     auto* self = static_cast<AudioEngine*>(userdata);
@@ -77,7 +86,17 @@ void AudioEngine::generate(float* out, int frames)
     float freq     = engineFreq_.load(std::memory_order_relaxed);
     float engVol   = engineVol_.load(std::memory_order_relaxed);
     float sqVol    = squealVol_.load(std::memory_order_relaxed);
+    float impTrig  = impactTrigger_.exchange(0.f, std::memory_order_relaxed);
     float invRate  = 1.f / (float)sampleRate_;
+
+    // Start new impact if triggered (louder than remaining energy)
+    if (impTrig > impactEnergy_) {
+        impactEnergy_ = impTrig;
+        impactLpState_ = 0.f;
+    }
+
+    // Impact decay rate: ~150ms half-life → sounds like a thump
+    float impactDecay = std::exp(-4.5f * (float)frames * invRate);
     constexpr float TAU = 6.2831853f;
 
     // Biquad bandpass coefficients for tire squeal.
@@ -116,6 +135,19 @@ void AudioEngine::generate(float* out, int frames)
         bqX2_ = bqX1_; bqX1_ = x;
         bqY2_ = bqY1_; bqY1_ = squeal;
 
-        out[i] = eng * engVol + squeal * sqVol;
+        // Impact: low-pass filtered noise burst with exponential decay.
+        // Sounds like a metallic thump/crunch. LP cutoff ~300 Hz via
+        // simple one-pole filter (alpha ≈ 2*pi*300/sampleRate).
+        float impact = 0.f;
+        if (impactEnergy_ > 0.001f) {
+            float raw = noise();
+            constexpr float LP_ALPHA = 0.04f;  // ~280 Hz at 44100 Hz
+            impactLpState_ += LP_ALPHA * (raw - impactLpState_);
+            impact = impactLpState_ * impactEnergy_ * 0.6f;
+            impactEnergy_ *= 1.f - 30.f * invRate;  // per-sample decay
+            if (impactEnergy_ < 0.001f) impactEnergy_ = 0.f;
+        }
+
+        out[i] = eng * engVol + squeal * sqVol + impact;
     }
 }

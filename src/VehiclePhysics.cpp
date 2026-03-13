@@ -128,7 +128,7 @@ void VehiclePhysics::update(float dt, const InputState& input)
         ComponentOutput out = c->update(rootInput);
         totalOutput.force  += out.force;
         totalOutput.torque += out.torque;
-        totalOutput.torque += glm::cross(c->attachmentPoint(), out.force);
+        totalOutput.torque += glm::cross(state_.bodyRotation * c->attachmentPoint(), out.force);
     }
 
     // --- Integration --------------------------------------------------------
@@ -142,13 +142,31 @@ void VehiclePhysics::update(float dt, const InputState& input)
     state_.velocity += accel * dt;
     state_.position += state_.velocity * dt;
 
-    // Angular (simplified: use scalar inertia for now)
+    // Angular — work in body frame so inertia tensor axes are correct.
+    // World torque → body frame, divide by body-frame inertia, integrate body ω.
     glm::vec3 inertia = body_ ? body_->inertia() : glm::vec3(500.f, 2000.f, 500.f);
-    glm::vec3 angAccel = totalOutput.torque / inertia;  // component-wise
+    glm::vec3 bodyTorque = glm::transpose(state_.bodyRotation) * totalOutput.torque;
+    glm::vec3 angAccel = bodyTorque / inertia;
     state_.angularVel += angAccel * dt;
-    state_.angularVel *= 0.98f;  // angular damping
 
-    // Update heading/pitch/roll from angular velocity
+    // Speed-dependent angular damping:
+    // At standstill, tire contact patches strongly resist rotation.
+    // At speed, rely on tire lateral forces for natural yaw damping.
+    float speed = glm::length(state_.velocity);
+    float dampPerStep = 0.999f;
+    if (speed < 3.f) {
+        float blend = speed / 3.f;
+        dampPerStep = 0.95f + blend * (0.999f - 0.95f);
+    }
+    state_.angularVel *= dampPerStep;
+
+    // Hard cap: no car spins faster than ~1.5 rev/s in any axis
+    constexpr float MAX_ANG_VEL = 3.f * 3.14159265f;  // ~540°/s
+    float angMag = glm::length(state_.angularVel);
+    if (angMag > MAX_ANG_VEL)
+        state_.angularVel *= MAX_ANG_VEL / angMag;
+
+    // Body-frame angular velocity → Euler angle rates
     state_.heading += state_.angularVel.y * dt;
     state_.pitch   += state_.angularVel.x * dt;
     state_.roll    += state_.angularVel.z * dt;

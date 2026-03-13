@@ -34,7 +34,9 @@ struct Renderer {
     void draw(VkCommandBuffer cmd, uint32_t W, uint32_t H,
               const Vehicle& veh, const HudData& hud,
               const Playground& playground,
-              const TrailGeometry* trails = nullptr);
+              const TrailGeometry* trails = nullptr,
+              float frameDt = 0.f);
+    void resetChaseCam() { chaseCamInit_ = false; }
     void shutdown(VkDevice dev);
 
 private:
@@ -78,6 +80,12 @@ private:
     VkBuffer       terrainIbuf_ = VK_NULL_HANDLE;  VkDeviceMemory terrainImem_ = VK_NULL_HANDLE;
     uint32_t       terrainIdxCount_ = 0;
 
+    // Sprung chase camera state (bottom-right viewport)
+    float     chaseCamHeading_ = 0.f;   // smoothed yaw (radians)
+    glm::vec3 chaseCamPos_     = {};     // smoothed world position
+    bool      chaseCamInit_    = false;  // first-frame init flag
+
+    void updateChaseCam(float dt, const Vehicle& veh, const Terrain& terrain);
     void drawScene(VkCommandBuffer cmd, const glm::mat4& vp, const Vehicle& veh,
                    const Playground& playground, bool hasTrails);
     void drawHud(VkCommandBuffer cmd, uint32_t W, uint32_t H, const HudData& hud);

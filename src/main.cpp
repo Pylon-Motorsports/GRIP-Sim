@@ -129,6 +129,7 @@ static void fillVehicle(Vehicle& veh, const VehiclePhysics& physics)
     veh.pitch        = st.pitch;
     veh.roll         = st.roll;
     veh.bodyRotation = st.bodyRotation;
+    veh.velocity     = st.velocity;
 
     auto* phys = const_cast<VehiclePhysics*>(&physics);
     veh.frontSteerAngle = phys->frontSubframe()->left()->tire()->steerAngle();
@@ -225,6 +226,11 @@ int main(int /*argc*/, char** /*argv*/)
     // Previous spring compressions for velocity estimation
     float prevComp[4] = {};
 
+    // Throttle/brake smoothing for keyboard (binary) input
+    float smoothThrottle = 0.f;
+    float smoothBrake    = 0.f;
+    float smoothSteer    = 0.f;  // rate-limited steering
+
     bool running = true;
     while (running) {
         Uint64 now = SDL_GetPerformanceCounter();
@@ -246,6 +252,7 @@ int main(int /*argc*/, char** /*argv*/)
                 physics.reset();
                 initVehiclePosition(physics, playground.terrain);
                 tireTrails.clear();
+                renderer.resetChaseCam();
                 for (float& c : prevComp) c = 0.f;
             }
 
@@ -282,6 +289,45 @@ int main(int /*argc*/, char** /*argv*/)
                 input.handBrake = 1.f;
         }
 
+        // Smooth throttle/brake so keyboard users get gradual ramp instead of 0→1
+        {
+            constexpr float THROTTLE_RAMP = 3.0f;   // 0→1 in ~0.33s
+            constexpr float BRAKE_RAMP    = 8.0f;   // 0→1 in ~0.125s (brakes respond fast)
+            constexpr float RELEASE_RAMP  = 6.0f;   // 1→0 in ~0.17s
+
+            if (input.throttle > smoothThrottle)
+                smoothThrottle = std::min(input.throttle, smoothThrottle + THROTTLE_RAMP * frameDt);
+            else
+                smoothThrottle = std::max(input.throttle, smoothThrottle - RELEASE_RAMP * frameDt);
+            input.throttle = smoothThrottle;
+
+            if (input.brake > smoothBrake)
+                smoothBrake = std::min(input.brake, smoothBrake + BRAKE_RAMP * frameDt);
+            else
+                smoothBrake = std::max(input.brake, smoothBrake - RELEASE_RAMP * frameDt);
+            input.brake = smoothBrake;
+        }
+
+        // Progressive input curves:
+        // Brake: pow(x, 2.5) — 75% travel ≈ 46% force, lockup only at 100%
+        // Throttle: pow(x, 1.8) — light gas ≈ gentle torque, full power at 100%
+        input.brake    = std::pow(input.brake, 2.5f);
+        input.throttle = std::pow(input.throttle, 1.8f);
+
+        // Steering: rate limit + progressive curve
+        {
+            constexpr float STEER_RATE = 2.5f;  // full lock in ~0.40s
+            float target = input.steer;
+            if (target > smoothSteer)
+                smoothSteer = std::min(target, smoothSteer + STEER_RATE * frameDt);
+            else
+                smoothSteer = std::max(target, smoothSteer - STEER_RATE * frameDt);
+
+            // Progressive curve: pow(|x|, 2.0) * sign(x) — more dead zone near center
+            float sign = (smoothSteer >= 0.f) ? 1.f : -1.f;
+            input.steer = sign * std::pow(std::abs(smoothSteer), 2.f);
+        }
+
         // Fixed-timestep physics
         while (accumulator >= PHYSICS_DT) {
             // 1. Set spring compressions from terrain
@@ -297,8 +343,17 @@ int main(int /*argc*/, char** /*argv*/)
 
             // 4. Body collision against terrain
             auto contacts = checkBodyCollisions(physics, playground.terrain);
-            if (!contacts.empty())
+            if (!contacts.empty()) {
                 physics.applyCollisions(contacts, PHYSICS_DT);
+
+                // Trigger impact sound scaled by collision severity
+                float maxPen = 0.f;
+                for (auto& c : contacts)
+                    maxPen = std::max(maxPen, c.penetration);
+                float intensity = std::clamp(maxPen / 0.10f, 0.f, 1.f);
+                if (intensity > 0.05f)
+                    audio.triggerCollision(intensity);
+            }
 
             // 5. Ground clamp
             groundClamp(physics, playground.terrain);
@@ -346,7 +401,7 @@ int main(int /*argc*/, char** /*argv*/)
         VkCommandBuffer cmd = ctx.beginFrame();
         if (cmd) {
             renderer.draw(cmd, ctx.swapExtent.width, ctx.swapExtent.height,
-                          vehicle, hud, playground, &trailGeo);
+                          vehicle, hud, playground, &trailGeo, frameDt);
             ctx.endFrame();
         }
     }

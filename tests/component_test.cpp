@@ -899,11 +899,10 @@ static void testSteerThenStopNoResidualYaw() {
     brk.brake = 1.f;
     simulateWithSprings(v, brk, 3.f);
 
-    // Hold still
+    // Hold still — low-speed angular damping from tire contact patches kills yaw
     InputState none{};
     simulateWithSprings(v, none, 2.f);
 
-    // Angular velocity should have decayed (angular damping + stiction)
     float yawRate = std::abs(v.state().angularVel.y);
     CHECK(yawRate < 0.05f,
           "No residual yaw after steering, braking, and resting");
@@ -1001,7 +1000,7 @@ struct PlaneObstacle {
 static std::vector<CollisionContact> checkPlane(VehiclePhysics& v,
                                                  const PlaneObstacle& plane) {
     std::vector<CollisionContact> contacts;
-    std::array<glm::vec3, 8> corners = v.body()->colliderCorners();
+    auto corners = v.body()->colliderCorners();
     const auto& st = v.state();
     glm::vec3 cgWorld = st.position + st.bodyRotation * v.body()->attachmentPoint();
 
@@ -1479,6 +1478,306 @@ static void testLeftAndRightBumpRollOpposite() {
           "Left and right bumps produce opposite roll directions");
 }
 
+// ========================= Drop tests =====================================
+
+// Drop vehicle upside-down onto ground plane. Expect energy absorption, not bounce.
+static void testDropUpsideDown() {
+    std::printf("  testDropUpsideDown\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.1f);
+
+    // Position above ground, upside-down (roll = pi)
+    v.mutableState().position = glm::vec3(0.f, 3.f, 0.f);
+    v.mutableState().roll = 3.14159f;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, 0.f, 3.14159f);
+
+    // Ground plane at y=0, normal pointing up
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+
+    // Simulate 2 seconds — enough to fall, hit, and settle
+    simulateWithCollisions(v, none, 2.0f, { ground });
+
+    // After hitting ground upside-down, vehicle should NOT bounce higher than drop height
+    CHECK(v.state().position.y < 3.f,
+          "Upside-down drop: doesn't bounce above drop height");
+
+    // Speed should be mostly absorbed (not bouncing endlessly)
+    float speed = glm::length(v.state().velocity);
+    CHECK(speed < 5.f,
+          "Upside-down drop: energy mostly absorbed after 2s");
+}
+
+// Drop vehicle nose-down at 45 degrees.
+static void testDrop45DegPitch() {
+    std::printf("  testDrop45DegPitch\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.1f);
+
+    // 45 degrees nose down (negative pitch = nose down)
+    float pitchAngle = -0.7854f;  // -pi/4
+    v.mutableState().position = glm::vec3(0.f, 3.f, 0.f);
+    v.mutableState().pitch = pitchAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, pitchAngle, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 2.0f, { ground });
+
+    CHECK(v.state().position.y < 3.f,
+          "45-deg pitch drop: doesn't bounce above drop height");
+
+    float speed = glm::length(v.state().velocity);
+    CHECK(speed < 5.f,
+          "45-deg pitch drop: energy mostly absorbed after 2s");
+}
+
+// Drop vehicle rolled 45 degrees onto its side.
+static void testDrop45DegRoll() {
+    std::printf("  testDrop45DegRoll\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.1f);
+
+    // 45 degrees roll (right side down)
+    float rollAngle = 0.7854f;  // pi/4
+    v.mutableState().position = glm::vec3(0.f, 3.f, 0.f);
+    v.mutableState().roll = rollAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, 0.f, rollAngle);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 2.0f, { ground });
+
+    CHECK(v.state().position.y < 3.f,
+          "45-deg roll drop: doesn't bounce above drop height");
+
+    float speed = glm::length(v.state().velocity);
+    CHECK(speed < 5.f,
+          "45-deg roll drop: energy mostly absorbed after 2s");
+}
+
+// Drop vehicle pitched 90° nose-down (standing on front bumper).
+static void testDrop90DegNoseDown() {
+    std::printf("  testDrop90DegNoseDown\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.1f);
+
+    // Pitched -90° (nose straight down)
+    float pitchAngle = -1.5708f;  // -pi/2
+    v.mutableState().position = glm::vec3(0.f, 4.f, 0.f);
+    v.mutableState().pitch = pitchAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, pitchAngle, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 3.0f, { ground });
+
+    CHECK(v.state().position.y < 4.f,
+          "90-deg nose-down drop: doesn't bounce above drop height");
+
+    float speed = glm::length(v.state().velocity);
+    CHECK(speed < 5.f,
+          "90-deg nose-down drop: energy mostly absorbed after 3s");
+}
+
+// Drop vehicle pitched +90° (standing on rear bumper, nose up).
+static void testDrop90DegNoseUp() {
+    std::printf("  testDrop90DegNoseUp\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.1f);
+
+    // Pitched +90° (nose straight up, tail down)
+    float pitchAngle = 1.5708f;  // +pi/2
+    v.mutableState().position = glm::vec3(0.f, 4.f, 0.f);
+    v.mutableState().pitch = pitchAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, pitchAngle, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 3.0f, { ground });
+
+    CHECK(v.state().position.y < 4.f,
+          "90-deg nose-up drop: doesn't bounce above drop height");
+
+    float speed = glm::length(v.state().velocity);
+    CHECK(speed < 5.f,
+          "90-deg nose-up drop: energy mostly absorbed after 3s");
+}
+
+// ========================= Catch-ground spin tests =========================
+
+// Vehicle moving forward at speed, pitched nose-down, catches ground.
+// Should rotate and settle, NOT spin crazily.
+static void testCatchGroundNoseDown() {
+    std::printf("  testCatchGroundNoseDown\n");
+    auto v = makeVehicle();
+
+    // Moving forward at 15 m/s, pitched -15° (nose down), slightly above ground
+    float pitchAngle = -0.26f;  // ~-15°
+    v.mutableState().position = glm::vec3(0.f, 1.0f, 0.f);
+    v.mutableState().velocity = glm::vec3(0.f, 0.f, 15.f);
+    v.mutableState().pitch = pitchAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, pitchAngle, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+
+    // Track peak angular velocity — the key measure of "no crazy spin"
+    float peakAngSpeed = 0.f;
+    for (float t = 0.f; t < 3.f; t += DT) {
+        std::vector<CollisionContact> allContacts;
+        auto c = checkPlane(v, ground);
+        allContacts.insert(allContacts.end(), c.begin(), c.end());
+        v.applyCollisions(allContacts, DT);
+        v.update(DT, none);
+        float angSpeed = glm::length(v.state().angularVel);
+        if (angSpeed > peakAngSpeed) peakAngSpeed = angSpeed;
+    }
+
+    CHECK(peakAngSpeed < 4.f * 3.14159f,
+          "Catch-ground nose-down: peak angular velocity < 2 rev/s");
+    CHECK(v.state().position.y < 5.f,
+          "Catch-ground nose-down: not launched high");
+}
+
+// Vehicle moving forward, rolled to one side, catches ground on lower corner.
+static void testCatchGroundRolled() {
+    std::printf("  testCatchGroundRolled\n");
+    auto v = makeVehicle();
+
+    // Moving forward at 15 m/s, rolled 20° right, slightly above ground
+    float rollAngle = 0.35f;  // ~20°
+    v.mutableState().position = glm::vec3(0.f, 1.0f, 0.f);
+    v.mutableState().velocity = glm::vec3(0.f, 0.f, 15.f);
+    v.mutableState().roll = rollAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, 0.f, rollAngle);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+
+    float peakAngSpeed = 0.f;
+    for (float t = 0.f; t < 3.f; t += DT) {
+        std::vector<CollisionContact> allContacts;
+        auto c = checkPlane(v, ground);
+        allContacts.insert(allContacts.end(), c.begin(), c.end());
+        v.applyCollisions(allContacts, DT);
+        v.update(DT, none);
+        float angSpeed = glm::length(v.state().angularVel);
+        if (angSpeed > peakAngSpeed) peakAngSpeed = angSpeed;
+    }
+
+    CHECK(peakAngSpeed < 4.f * 3.14159f,
+          "Catch-ground rolled: peak angular velocity < 2 rev/s");
+    CHECK(v.state().position.y < 5.f,
+          "Catch-ground rolled: not launched high");
+}
+
+// Vehicle with existing angular velocity, single corner touching.
+// Should NOT develop unbounded spin.
+static void testSingleCornerContactBounded() {
+    std::printf("  testSingleCornerContactBounded\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.1f);
+
+    // Vehicle barely above ground with moderate angular velocity
+    v.mutableState().position = glm::vec3(0.f, 0.8f, 0.f);
+    v.mutableState().velocity = glm::vec3(0.f, -2.f, 10.f);
+    v.mutableState().angularVel = glm::vec3(3.f, 0.f, 0.f);  // pitching
+    float pitchAngle = -0.3f;
+    v.mutableState().pitch = pitchAngle;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, pitchAngle, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+
+    // Track peak angular velocity through simulation
+    float peakAngSpeed = 0.f;
+    for (float t = 0.f; t < 3.f; t += DT) {
+        std::vector<CollisionContact> allContacts;
+        auto c = checkPlane(v, ground);
+        allContacts.insert(allContacts.end(), c.begin(), c.end());
+        v.applyCollisions(allContacts, DT);
+        v.update(DT, none);
+        float angSpeed = glm::length(v.state().angularVel);
+        if (angSpeed > peakAngSpeed) peakAngSpeed = angSpeed;
+    }
+
+    CHECK(peakAngSpeed < 4.f * 3.14159f,
+          "Single-corner contact: peak angular velocity < 2 rev/s");
+}
+
+// ========================= High-centering =================================
+
+// Vehicle on a raised platform between the wheels — wheels in air,
+// body resting on the platform. Should not make forward progress under throttle.
+static void testHighCentering() {
+    std::printf("  testHighCentering\n");
+    auto v = makeVehicle();
+
+    // Platform: a horizontal plane at y=0.40 (above wheel bottom, below body).
+    // Vehicle origin at y=0.45 (body resting on platform, wheels dangling).
+    // Springs at zero compression (no ground contact for wheels).
+    v.mutableState().position = glm::vec3(0.f, 0.45f, 0.f);
+
+    PlaneObstacle platform{
+        .point  = glm::vec3(0.f, 0.40f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    // Full throttle, no springs (wheels in air)
+    InputState gas{};
+    gas.throttle = 1.f;
+
+    float startZ = v.state().position.z;
+
+    // Simulate with collisions (platform holds body up) but no spring compression
+    // (wheels hanging free, no traction)
+    for (float t = 0.f; t < 2.f; t += DT) {
+        std::vector<CollisionContact> contacts;
+        auto c = checkPlane(v, platform);
+        contacts.insert(contacts.end(), c.begin(), c.end());
+        v.applyCollisions(contacts, DT);
+        // No loadSprings — wheels have no ground contact
+        v.update(DT, gas);
+    }
+
+    float travel = std::abs(v.state().position.z - startZ);
+    CHECK(travel < 0.5f,
+          "High-centered: minimal forward progress with wheels in air");
+}
+
 // ========================= Main ===========================================
 
 int main() {
@@ -1575,6 +1874,21 @@ int main() {
     testLeftSideSpeedBump();
     testRightSideSpeedBump();
     testLeftAndRightBumpRollOpposite();
+
+    std::printf("Drop tests:\n");
+    testDropUpsideDown();
+    testDrop45DegPitch();
+    testDrop45DegRoll();
+    testDrop90DegNoseDown();
+    testDrop90DegNoseUp();
+
+    std::printf("Catch-ground spin:\n");
+    testCatchGroundNoseDown();
+    testCatchGroundRolled();
+    testSingleCornerContactBounded();
+
+    std::printf("High-centering:\n");
+    testHighCentering();
 
     std::printf("Reset:\n");
     testResetZerosState();

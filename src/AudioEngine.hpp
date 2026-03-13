@@ -15,6 +15,9 @@ public:
     void setEngineRpm(float rpm, float rpmLimit, float throttle);
     void setTireSlip(float maxSlipRatio, float maxSlipAngleDeg);
 
+    // Trigger a one-shot impact sound. intensity in [0,1] scales volume.
+    void triggerCollision(float intensity);
+
 private:
     SDL_AudioDeviceID device_ = 0;
     int sampleRate_ = 0;
@@ -29,10 +32,15 @@ private:
     float bqX1_ = 0.f, bqX2_ = 0.f;    // biquad input history
     float bqY1_ = 0.f, bqY2_ = 0.f;    // biquad output history
 
+    // Collision impact: decaying noise burst
+    float impactEnergy_ = 0.f;               // audio thread — remaining energy
+    float impactLpState_ = 0.f;              // audio thread — lowpass filter state
+
     // Shared state (written by game thread, read by audio thread)
     std::atomic<float> engineFreq_{80.f};    // Hz (maps from RPM)
     std::atomic<float> engineVol_{0.f};      // [0, 1]
     std::atomic<float> squealVol_{0.f};      // [0, 1]
+    std::atomic<float> impactTrigger_{0.f};  // >0 triggers new impact
 
     static void audioCallback(void* userdata, Uint8* stream, int len);
     void generate(float* out, int frames);
