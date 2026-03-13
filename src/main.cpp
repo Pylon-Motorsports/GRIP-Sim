@@ -153,8 +153,10 @@ static void fillVehicle(Vehicle& veh, const VehiclePhysics& physics)
         veh.mountPos[i] = st.position + st.bodyRotation * mLocal;
 
         const auto& to = wheels[i].corner->tire()->tireOutput();
-        veh.wheelSlipRatio[i]   = to.slipRatio;
-        veh.wheelSlipAngle[i]   = to.slipAngleRad;
+        // Only report slip to trail renderer when tire is actually sliding.
+        // Prevents faint stripey marks during normal cornering.
+        veh.wheelSlipRatio[i]   = to.sliding ? to.slipRatio : 0.f;
+        veh.wheelSlipAngle[i]   = to.sliding ? to.slipAngleRad : 0.f;
         veh.wheelNormalLoad[i]  = to.normalLoadN;
         veh.wheelContactWidth[i] = wheels[i].corner->tire()->width;
     }

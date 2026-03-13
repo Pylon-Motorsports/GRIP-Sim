@@ -39,8 +39,13 @@ ComponentOutput SimpleTire::compute(const ComponentInput& input) {
         // sin(C * atan(B * x)): B=15 steep initial slope, C=1.5 peak at ~8°
         Fy = -maxLatStatic * std::sin(1.5f * std::atan(15.f * slipAngle));
         // Low-speed lateral fade: contact patch needs velocity to deform.
-        // Cubic below 3 m/s prevents full-lock spin from standstill.
-        float speedFade = std::min(speed * speed * speed / 27.f, 1.f);
+        // Steered tires: cubic fade prevents full-lock spin from standstill.
+        // Unsteered tires: linear fade preserves lateral grip at low speed.
+        float speedFade;
+        if (steered)
+            speedFade = std::min(speed * speed * speed / 27.f, 1.f);
+        else
+            speedFade = std::min(speed / 3.f, 1.f);
         Fy *= speedFade;
     } else {
         // Low-speed stiction
@@ -115,9 +120,24 @@ ComponentOutput SimpleTire::compute(const ComponentInput& input) {
         slipRatio = std::clamp(Fx / maxLonStatic, -1.f, 1.f);
     tireOutput_.slipRatio = slipRatio;
 
+    // --- Self-aligning torque (SAT): pneumatic trail creates yaw moment ---
+    // Trail decreases toward peak slip angle (saturation reduces trail).
+    // SAT opposes the slip angle, naturally centering the vehicle.
+    float satTorque = 0.f;
+    if (speed > 0.5f && std::abs(Fy) > 1.f) {
+        // Saturation: ratio of actual to max lateral force → 1.0 at peak grip
+        float saturation = std::abs(Fy) / std::max(maxLatStatic, 1.f);
+        float effectiveTrail = pneumaticTrail * std::max(0.f, 1.f - saturation);
+        // SAT = trail * Fy: positive Fy → positive torque → opposes slip
+        satTorque = effectiveTrail * Fy;
+    }
+
     // --- Rotate tire-local forces to world frame ---
     glm::vec3 tireForce = input.bodyRotation *
         glm::vec3(Fy * cs + Fx * sn, 0.f, -Fy * sn + Fx * cs);
 
-    return { .force = tireForce };
+    // SAT acts about the vertical axis at the contact patch (world Y)
+    glm::vec3 worldTorque = input.bodyRotation * glm::vec3(0.f, satTorque, 0.f);
+
+    return { .force = tireForce, .torque = worldTorque };
 }

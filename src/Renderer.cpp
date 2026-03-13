@@ -946,8 +946,12 @@ void Renderer::updateChaseCam(float dt, const Vehicle& veh, const Terrain& terra
     chaseCamHeading_ += headingDiff * headingAlpha;
 
     // --- Spring position toward desired ---
+    // Stiffen at higher speed to prevent zoom-in/out oscillation.
+    // TAU 0.3 at rest → 0.08 at 30+ m/s (nearly rigid follow).
+    float speedNorm = std::clamp(hzSpeed / 30.f, 0.f, 1.f);
+    float posTau = POS_TAU * (1.f - 0.73f * speedNorm);
     glm::vec3 desiredPos = desiredPosFromHeading(chaseCamHeading_);
-    float posAlpha = 1.f - std::exp(-dt / POS_TAU);
+    float posAlpha = 1.f - std::exp(-dt / posTau);
     chaseCamPos_ += (desiredPos - chaseCamPos_) * posAlpha;
 
     // --- Anti-clip: push camera above terrain ---

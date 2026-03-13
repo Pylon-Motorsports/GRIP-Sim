@@ -11,6 +11,7 @@ public:
     float longMuStatic     = 1.2f;   // peak longitudinal mu (matched to lateral)
     float longMuDynamic    = 0.95f;  // sliding longitudinal mu
     float rollingResistCoeff = 0.015f; // rolling resistance (sport tires on tarmac)
+    float pneumaticTrail     = 0.035f; // SAT trail distance (m), typical for 215mm tire
 
     SimpleTire(std::string name, glm::vec3 attachPt, bool steered_, bool driven_);
 

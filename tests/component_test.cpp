@@ -1781,6 +1781,137 @@ static void testHighCentering() {
           "High-centered: minimal forward progress with wheels in air");
 }
 
+// ========================= Wall impact: no excessive vertical force ========
+
+static void testWallImpactNoVerticalLaunch() {
+    std::printf("  testWallImpactNoVerticalLaunch\n");
+    auto v = makeVehicle();
+    v.body()->setRestitution(0.3f);
+    v.mutableState().velocity = glm::vec3(0.f, 0.f, 15.f);  // 15 m/s into wall
+
+    PlaneObstacle wall{
+        .point  = glm::vec3(0.f, 0.f, 2.5f),
+        .normal = glm::vec3(0.f, 0.f, -1.f)
+    };
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    float peakVy = 0.f;
+    for (float t = 0.f; t < 2.f; t += DT) {
+        auto contacts = checkPlane(v, wall);
+        auto gc = checkPlane(v, ground);
+        contacts.insert(contacts.end(), gc.begin(), gc.end());
+        v.applyCollisions(contacts, DT);
+        v.update(DT, none);
+        peakVy = std::max(peakVy, v.state().velocity.y);
+    }
+
+    std::printf("    peak upward velocity: %.2f m/s\n", peakVy);
+    CHECK(peakVy < 3.f,
+          "Wall impact doesn't launch vehicle upward");
+}
+
+// ========================= Resting on sides/ends/roof =====================
+
+static void testRestOnSide() {
+    std::printf("  testRestOnSide\n");
+    auto v = makeVehicle();
+    // Start on right side (roll = π/2), slightly above ground
+    v.mutableState().position = glm::vec3(0.f, 0.8f, 0.f);
+    v.mutableState().roll = 3.14159265f / 2.f;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, 0.f, 3.14159265f / 2.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 3.f, { ground });
+
+    float speed = glm::length(v.state().velocity);
+    float angSpeed = glm::length(v.state().angularVel);
+    float y = v.state().position.y;
+    std::printf("    speed=%.2f, angSpeed=%.2f, y=%.2f\n", speed, angSpeed, y);
+    CHECK(speed < 3.f, "Vehicle on side: nearly stationary");
+    // Side is unstable — car topples, so angular velocity is expected
+    CHECK(angSpeed < 12.f, "Vehicle on side: bounded spin");
+    CHECK(y < 1.5f, "Vehicle on side: not launched");
+}
+
+static void testRestOnRoof() {
+    std::printf("  testRestOnRoof\n");
+    auto v = makeVehicle();
+    // Start upside down (roll = π), slightly above ground
+    v.mutableState().position = glm::vec3(0.f, 1.0f, 0.f);
+    v.mutableState().roll = 3.14159265f;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, 0.f, 3.14159265f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 3.f, { ground });
+
+    float speed = glm::length(v.state().velocity);
+    float angSpeed = glm::length(v.state().angularVel);
+    std::printf("    speed=%.2f, angSpeed=%.2f\n", speed, angSpeed);
+    CHECK(speed < 3.f, "Vehicle on roof: nearly stationary");
+    CHECK(angSpeed < 5.f, "Vehicle on roof: bounded spin");
+}
+
+static void testRestOnNose() {
+    std::printf("  testRestOnNose\n");
+    auto v = makeVehicle();
+    // Nose down (pitch = -π/2), elevated
+    v.mutableState().position = glm::vec3(0.f, 1.5f, 0.f);
+    v.mutableState().pitch = -3.14159265f / 2.f;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, -3.14159265f / 2.f, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 3.f, { ground });
+
+    float speed = glm::length(v.state().velocity);
+    float angSpeed = glm::length(v.state().angularVel);
+    std::printf("    speed=%.2f, angSpeed=%.2f\n", speed, angSpeed);
+    CHECK(speed < 3.f, "Vehicle on nose: settles");
+    // Nose-down is unstable (CG above contact) — car topples forward
+    CHECK(angSpeed < 12.f, "Vehicle on nose: bounded spin");
+}
+
+static void testRestOnTail() {
+    std::printf("  testRestOnTail\n");
+    auto v = makeVehicle();
+    // Tail down (pitch = +π/2), elevated
+    v.mutableState().position = glm::vec3(0.f, 1.5f, 0.f);
+    v.mutableState().pitch = 3.14159265f / 2.f;
+    v.mutableState().bodyRotation = rotationFromAngles(0.f, 3.14159265f / 2.f, 0.f);
+
+    PlaneObstacle ground{
+        .point  = glm::vec3(0.f, 0.f, 0.f),
+        .normal = glm::vec3(0.f, 1.f, 0.f)
+    };
+
+    InputState none{};
+    simulateWithCollisions(v, none, 3.f, { ground });
+
+    float speed = glm::length(v.state().velocity);
+    float angSpeed = glm::length(v.state().angularVel);
+    std::printf("    speed=%.2f, angSpeed=%.2f\n", speed, angSpeed);
+    CHECK(speed < 3.f, "Vehicle on tail: settles");
+    CHECK(angSpeed < 5.f, "Vehicle on tail: bounded spin");
+}
+
 // ========================= Main ===========================================
 
 int main() {
@@ -1889,6 +2020,15 @@ int main() {
     testCatchGroundNoseDown();
     testCatchGroundRolled();
     testSingleCornerContactBounded();
+
+    std::printf("Wall impact:\n");
+    testWallImpactNoVerticalLaunch();
+
+    std::printf("Resting orientations:\n");
+    testRestOnSide();
+    testRestOnRoof();
+    testRestOnNose();
+    testRestOnTail();
 
     std::printf("High-centering:\n");
     testHighCentering();

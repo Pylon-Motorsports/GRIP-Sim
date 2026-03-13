@@ -538,6 +538,38 @@ static void testFullThrottleAcceleration() {
 }
 
 // ---------------------------------------------------------------------------
+// Low-speed steering: full lock + light gas should creep forward, not spin
+// ---------------------------------------------------------------------------
+
+static void testFullLockLightGasCreepsForward() {
+    std::printf("  testFullLockLightGasCreepsForward\n");
+    VehiclePhysics v; v.init();
+    Terrain t;
+    initOnTerrain(v, t);
+    float prevComp[4] = {};
+
+    InputState idle{};
+    simulate(v, t, idle, 0.5f, prevComp);
+
+    // Full left lock + moderate gas from standstill — run longer to build speed
+    InputState lockGas{}; lockGas.steer = -1.f; lockGas.throttle = 0.5f;
+
+    float peakLateralSpeed = 0.f;
+    for (float elapsed = 0.f; elapsed < 5.f; elapsed += DT) {
+        physicsStep(v, t, lockGas, prevComp);
+        glm::vec3 bodyVel = glm::transpose(v.state().bodyRotation) * v.state().velocity;
+        peakLateralSpeed = std::max(peakLateralSpeed, std::abs(bodyVel.x));
+    }
+
+    float totalSpeed = glm::length(v.state().velocity);
+    std::printf("    total speed: %.2f m/s, peak lateral: %.2f m/s\n",
+        totalSpeed, peakLateralSpeed);
+    CHECK(totalSpeed > 0.3f, "car moves with full lock + gas");
+    CHECK(peakLateralSpeed < 3.f,
+          "rear tires don't slide sideways excessively");
+}
+
+// ---------------------------------------------------------------------------
 // Skid mark tests — no false skid marks during normal driving
 // ---------------------------------------------------------------------------
 
@@ -742,6 +774,9 @@ int main() {
     std::printf("Acceleration grip:\n");
     testHalfThrottleNoSliding();
     testFullThrottleAcceleration();
+
+    std::printf("Low-speed steering:\n");
+    testFullLockLightGasCreepsForward();
 
     std::printf("Skid marks:\n");
     testNoSkidMarksStraightLine();
