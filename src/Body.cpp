@@ -1,124 +1,119 @@
 #include "Body.hpp"
-#include <cmath>
+#include "VehiclePhysics.hpp"
 #include <algorithm>
+#include <cmath>
 
-void Body::computeInertia()
-{
-    float w = 2.f * Vehicle::HALF_TRACK;
-    float l = Vehicle::FRONT_AXLE + Vehicle::REAR_AXLE;
-    float h = 2.f * Vehicle::BODY_HALF_H;
-    pitchInertia = massKg * (h * h + l * l) / 12.f;
-    rollInertia  = massKg * (h * h + w * w) / 12.f;
-    yawInertia   = massKg * (w * w + l * l) / 12.f;
+Body::Body(glm::vec3 cg)
+    : VehiclePhysicsComponent("Body", cg) {}
+
+void Body::init() {
+    addChild(std::make_unique<Mass>(1300.f,
+        glm::vec3(500.f, 2000.f, 500.f)));
+
+    VehiclePhysicsComponent::init();
 }
 
-BodyState Body::bodyState(float lateralSpeed) const
-{
-    BodyState bs;
-    bs.pos = pos;
-    bs.vel = vel;
-    bs.heading = heading;
-    bs.pitch = pitch;
-    bs.roll = roll;
-    bs.forwardSpeed = forwardSpeed;
-    bs.lateralSpeed = lateralSpeed;
-    bs.pitchRate = pitchRate;
-    bs.rollRate = rollRate;
-    bs.yawRate = yawRate;
-    return bs;
+void Body::reset() {
+    pendingForce_  = glm::vec3(0.f);
+    pendingTorque_ = glm::vec3(0.f);
+    VehiclePhysicsComponent::reset();
 }
 
-void Body::applyAero(const glm::vec3& fwd,
-                     glm::vec3& bodyForce, glm::vec3& bodyTorque) const
-{
-    float speed = std::abs(forwardSpeed);
-    float drag = aero.dragForce(speed);
-    float dragSign = (forwardSpeed > 0.f) ? -1.f : 1.f;
-    bodyForce += fwd * (drag * dragSign);
-
-    // Drag acts at center of pressure above CG -> nose-down pitch moment.
-    bodyTorque.x -= drag * aero.dragCopHeight;
-
-    float df = aero.downforceTotal(speed);
-    bodyForce.y -= df;
-
-    float dfFront = df * aero.frontSplit;
-    float dfRear  = df * (1.f - aero.frontSplit);
-    bodyTorque.x += -dfFront * Vehicle::FRONT_AXLE + dfRear * Vehicle::REAR_AXLE;
+Mass* Body::mass() {
+    return findChild<Mass>("Mass");
 }
 
-void Body::applyCollider(const Terrain& terrain, const BodyState& bs,
-                         glm::vec3& bodyForce, glm::vec3& bodyTorque) const
-{
-    static constexpr float HW = Vehicle::HALF_TRACK + Vehicle::WHEEL_HALF_W;
-    static constexpr float FA = Vehicle::FRONT_AXLE;
-    static constexpr float RA = Vehicle::REAR_AXLE;
-    static constexpr float STIFFNESS = 300000.f;
-    static constexpr float DAMPING   = 10000.f;
+float Body::totalMassKg() const {
+    float m = 0.f;
+    for (auto& c : children())
+        if (auto* mc = dynamic_cast<const Mass*>(c.get()))
+            m += mc->massKg;
+    return m;
+}
 
-    static constexpr float BOT_Y = (Vehicle::WHEEL_Y - Vehicle::BODY_Y)
-                                   + Vehicle::WHEEL_RADIUS * 0.5f;
-    static constexpr float TOP_Y = Vehicle::BODY_HALF_H;
+glm::vec3 Body::inertia() const {
+    for (auto& c : children())
+        if (auto* mc = dynamic_cast<const Mass*>(c.get()))
+            return mc->inertia;
+    return glm::vec3(500.f, 2000.f, 500.f);
+}
 
-    const glm::vec3 corners[] = {
-        {-HW, BOT_Y,  FA}, { HW, BOT_Y,  FA},
-        {-HW, BOT_Y, -RA}, { HW, BOT_Y, -RA},
-        {-HW, TOP_Y,  FA}, { HW, TOP_Y,  FA},
-        {-HW, TOP_Y, -RA}, { HW, TOP_Y, -RA},
-    };
+std::array<glm::vec3, 8> Body::colliderCorners() const {
+    // 8 corners of the bounding box in body-local coordinates (relative to CG)
+    return {{
+        { -COLLIDER_HALF_W, COLLIDER_BOT_Y, COLLIDER_FRONT },  // 0: front-left-bottom
+        {  COLLIDER_HALF_W, COLLIDER_BOT_Y, COLLIDER_FRONT },  // 1: front-right-bottom
+        { -COLLIDER_HALF_W, COLLIDER_TOP_Y, COLLIDER_FRONT },  // 2: front-left-top
+        {  COLLIDER_HALF_W, COLLIDER_TOP_Y, COLLIDER_FRONT },  // 3: front-right-top
+        { -COLLIDER_HALF_W, COLLIDER_BOT_Y, COLLIDER_REAR  },  // 4: rear-left-bottom
+        {  COLLIDER_HALF_W, COLLIDER_BOT_Y, COLLIDER_REAR  },  // 5: rear-right-bottom
+        { -COLLIDER_HALF_W, COLLIDER_TOP_Y, COLLIDER_REAR  },  // 6: rear-left-top
+        {  COLLIDER_HALF_W, COLLIDER_TOP_Y, COLLIDER_REAR  },  // 7: rear-right-top
+    }};
+}
 
-    for (auto& local : corners) {
-        glm::vec3 world = bs.pos + bs.rotateLocal(local);
-        auto tc = terrain.contactAt(world);
-        if (tc.penetration > 0.f) {
-            float vInto = -glm::dot(vel, tc.normal);
-            float f = STIFFNESS * tc.penetration + DAMPING * std::max(vInto, 0.f);
-            glm::vec3 force = tc.normal * f;
-            bodyForce += force;
+void Body::applyCollisionResponse(const std::vector<CollisionContact>& contacts,
+                                  const VehicleState& state, float dt) {
+    if (contacts.empty() || dt <= 0.f) return;
 
-            bool isGround = std::abs(tc.normal.y) > 0.5f;
-            if (isGround) {
-                glm::vec3 leverArm = world - bs.pos;
-                bodyTorque += glm::cross(leverArm, force);
-            }
+    float mass = totalMassKg();
+    if (mass < 1.f) mass = 1300.f;
+
+    glm::vec3 totalForce(0.f);
+    glm::vec3 totalTorque(0.f);
+
+    for (auto& c : contacts) {
+        if (c.penetration <= 0.f) continue;
+
+        float pen = std::min(c.penetration, maxPenetration_);
+
+        // Velocity of body at contact point
+        glm::vec3 r = c.worldPoint - (state.position + state.bodyRotation * attachmentPoint_);
+        glm::vec3 vPoint = state.velocity + glm::cross(state.angularVel, r);
+
+        // Velocity into the surface (positive = approaching)
+        float vInto = -glm::dot(vPoint, c.normal);
+
+        // Spring force: push out of overlap
+        float springF = stiffness_ * pen;
+
+        // Damping: absorb energy (only when approaching)
+        float dampF = (vInto > 0.f) ? damping_ * vInto : 0.f;
+
+        float forceMag = springF + dampF;
+
+        // Restitution cap: limit the total impulse so rebound velocity
+        // is at most restitution * approach velocity
+        if (vInto > 0.f) {
+            float maxImpulse = (1.f + restitution_) * mass * vInto;
+            float maxForce   = maxImpulse / dt;
+            forceMag = std::min(forceMag, maxForce);
         }
+
+        if (forceMag <= 0.f) continue;
+
+        glm::vec3 contactForce = c.normal * forceMag;
+
+        // Torque: smoothly blend lever-arm torque based on how ground-like
+        // the contact is.  Pure ground (|normal.y|=1) gets full lever arm;
+        // steep ramps/walls (|normal.y|<0.7) get reduced or zero lever arm
+        // to prevent disproportionate launch off inclines.
+        float groundFactor = std::clamp(
+            (std::abs(c.normal.y) - 0.5f) / 0.5f, 0.f, 1.f);
+        totalTorque += groundFactor * glm::cross(r, contactForce);
+
+        totalForce += contactForce;
     }
+
+    pendingForce_  += totalForce;
+    pendingTorque_ += totalTorque;
 }
 
-void Body::integrate(const glm::vec3& bodyForce, const glm::vec3& bodyTorque,
-                     float totalMass, float dt)
-{
-    glm::vec3 accel = bodyForce / totalMass;
-    vel += accel * dt;
-    pos += vel * dt;
-
-    float pitchAccel = bodyTorque.x / pitchInertia;
-    float rollAccel  = bodyTorque.z / rollInertia;
-    pitchRate += pitchAccel * dt;
-    rollRate  += rollAccel  * dt;
-
-    float pitchDamp = std::min(BUSHING_PITCH_DAMPING / pitchInertia * dt, 1.f);
-    float rollDamp  = std::min(BUSHING_ROLL_DAMPING  / rollInertia  * dt, 1.f);
-    pitchRate *= (1.f - pitchDamp);
-    rollRate  *= (1.f - rollDamp);
-
-    pitch += pitchRate * dt;
-    roll  += rollRate  * dt;
-
-    float yawAccel = bodyTorque.y / yawInertia;
-    yawRate += yawAccel * dt;
-    heading += yawRate * dt;
-}
-
-void Body::reset()
-{
-    pos = {0.f, Vehicle::BODY_Y, 0.f};
-    vel = {0.f, 0.f, 0.f};
-    heading = 0.f;
-    forwardSpeed = 0.f;
-    pitch = 0.f;
-    roll = 0.f;
-    pitchRate = 0.f;
-    rollRate = 0.f;
-    yawRate = 0.f;
+ComponentOutput Body::compute(const ComponentInput& /*input*/) {
+    ComponentOutput out;
+    out.force  = pendingForce_;
+    out.torque = pendingTorque_;
+    pendingForce_  = glm::vec3(0.f);
+    pendingTorque_ = glm::vec3(0.f);
+    return out;
 }

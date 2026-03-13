@@ -1,72 +1,56 @@
 #include "Drivetrain.hpp"
-#include <cmath>
 #include <algorithm>
 
-void Drivetrain::init()
-{
-    engine.torqueCurve = TorqueCurve({
-        { 1000.f,  80.f },
-        { 2000.f, 140.f },
-        { 3000.f, 185.f },
-        { 3500.f, 205.f },
-        { 4500.f, 200.f },
-        { 5500.f, 175.f },
-        { 6500.f, 140.f },
-        { 7400.f, 110.f },
-    });
-    engine.gearRatios[0] = 3.9f * 3.63f;  // 14.2 — 1st
-    engine.gearRatios[1] = 3.9f * 2.19f;  // 8.5  — 2nd
-    engine.gearRatios[2] = 3.9f * 1.54f;  // 6.0  — 3rd
-    engine.gearRatios[3] = 3.9f * 1.13f;  // 4.4  — 4th
-    engine.gearRatios[4] = 3.9f * 0.91f;  // 3.5  — 5th
-    engine.numGears      = 5;
-    engine.currentGear   = 0;
-    engine.idleRpm         = 1200.f;
-    engine.clutchEngageRpm = 1800.f;
-    engine.clutchFullRpm   = 2500.f;
-    engine.rpmLimit        = 7400.f;
-    engine.engineBrakingNm = 40.f;
-    engine.rpm             = 1200.f;
+float Drivetrain::engineTorqueAtRpm(float rpm) const {
+    if (rpm < idleRpm)
+        return maxEngineTorqueNm * (rpm / idleRpm);  // ramp from 0
+    if (rpm <= 6400.f)
+        return maxEngineTorqueNm;                     // flat torque plateau
+    if (rpm <= redlineRpm) {
+        // Linear drop-off above peak
+        float t = (rpm - 6400.f) / (redlineRpm - 6400.f);
+        return maxEngineTorqueNm * (1.f - 0.3f * t);
+    }
+    return 0.f;  // beyond redline
 }
 
-float Drivetrain::computeDriveTorque(float throttle, bool clutchIn,
-                                      const Wheel& rearL, const Wheel& rearR, float dt)
-{
-    float rearAngVel = (rearL.angularVel + rearR.angularVel) * 0.5f;
-    float totalDrive = engine.update(throttle, clutchIn, rearAngVel, dt);
-    return totalDrive * 0.5f;
+void Drivetrain::autoShift(float rpm) {
+    if (rpm >= shiftUpRpm && currentGear < NUM_GEARS - 1)
+        currentGear++;
+    else if (rpm <= shiftDownRpm && currentGear > 0)
+        currentGear--;
 }
 
-void Drivetrain::computeBrakePressure(float pedal,
-                                       float& frontPressure, float& rearPressure) const
-{
-    frontPressure = pedal * MAX_BRAKE_PRESSURE * BRAKE_BIAS_FRONT;
-    float rearPedal = (pedal <= PROP_VALVE_KNEE)
-        ? pedal
-        : PROP_VALVE_KNEE + (pedal - PROP_VALVE_KNEE) * PROP_VALVE_SLOPE;
-    rearPressure = rearPedal * MAX_BRAKE_PRESSURE * (1.f - BRAKE_BIAS_FRONT);
+void Drivetrain::reset() {
+    currentGear = 0;
+    engineRpm   = idleRpm;
 }
 
-float Drivetrain::computeSteerAngle(float steerInput, float currentAngle,
-                                     float forwardSpeed, float dt) const
-{
-    float input = applyDeadzone(steerInput, STEER_DEADZONE);
-    float speedFactor = 1.f / (1.f + std::abs(forwardSpeed) / 30.f);
-    float target = input * MAX_STEER_ANGLE * speedFactor;
-    float maxDelta = MAX_STEER_RATE * dt;
-    float delta = target - currentAngle;
-    return currentAngle + std::clamp(delta, -maxDelta, maxDelta);
-}
+Drivetrain::Output Drivetrain::update(float throttle, float vehicleFwdSpeed,
+                                       float tireRadius) {
+    throttle = std::clamp(throttle, 0.f, 1.f);
 
-void Drivetrain::reset()
-{
-    engine.rpm = engine.idleRpm;
-    engine.currentGear = 0;
-}
+    float gearRatio    = gearRatios[currentGear];
+    float overallRatio = gearRatio * finalDriveRatio;
 
-float Drivetrain::applyDeadzone(float value, float deadzone)
-{
-    if (std::abs(value) < deadzone) return 0.f;
-    float sign = value > 0.f ? 1.f : -1.f;
-    return sign * (std::abs(value) - deadzone) / (1.f - deadzone);
+    // Estimate engine RPM from vehicle speed
+    float wheelRps = std::abs(vehicleFwdSpeed) / std::max(tireRadius, 0.01f);
+    float wheelRpm = wheelRps * 60.f / (2.f * 3.14159f);
+    engineRpm = std::max(idleRpm, wheelRpm * overallRatio);
+
+    autoShift(engineRpm);
+    // Recompute after potential shift
+    gearRatio    = gearRatios[currentGear];
+    overallRatio = gearRatio * finalDriveRatio;
+    engineRpm    = std::max(idleRpm, wheelRpm * overallRatio);
+
+    float engineTorque = engineTorqueAtRpm(engineRpm) * throttle;
+    float axleTorque   = engineTorque * overallRatio * efficiency;
+
+    // LSD split: for now, equal split (50/50).
+    // With a real LSD, we'd bias toward the slower wheel using lsdTorqueBias.
+    // Without per-wheel spin tracking, we default to 50/50.
+    float baseTorque = axleTorque * 0.5f;
+
+    return { baseTorque, baseTorque };
 }

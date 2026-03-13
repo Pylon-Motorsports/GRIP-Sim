@@ -2,177 +2,176 @@
 #include <cmath>
 #include <algorithm>
 
+// ---------------------------------------------------------------------------
+// Build the component tree
+// ---------------------------------------------------------------------------
 void VehiclePhysics::init()
 {
-    // Wheel local offsets relative to body CG.
-    float dy = Vehicle::WHEEL_Y - Vehicle::BODY_Y;  // negative (wheels below CG)
-    wheels_[0].localOffset = {-Vehicle::HALF_TRACK, dy,  Vehicle::FRONT_AXLE};
-    wheels_[1].localOffset = { Vehicle::HALF_TRACK, dy,  Vehicle::FRONT_AXLE};
-    wheels_[2].localOffset = {-Vehicle::HALF_TRACK, dy, -Vehicle::REAR_AXLE};
-    wheels_[3].localOffset = { Vehicle::HALF_TRACK, dy, -Vehicle::REAR_AXLE};
+    // CG position: center, 0.35m up, 0.05m behind geometric center
+    auto body = std::make_unique<Body>(glm::vec3(0.f, 0.35f, -0.05f));
 
-    for (auto& w : wheels_) {
-        w.massKg = 20.f;
-        w.tire = std::make_unique<BrushTire>();
-        w.tire->radius = Vehicle::WHEEL_RADIUS;
-        w.tire->width  = Vehicle::WHEEL_HALF_W * 2.f;
+    auto splitter = std::make_unique<AeroSurface>("Splitter",
+        glm::vec3(0.f, 0.15f, 1.8f),   0.18f, -0.25f);
+
+    auto rearWing = std::make_unique<AeroSurface>("RearWing",
+        glm::vec3(0.f, 0.9f, -1.6f),   0.12f, -0.40f);
+
+    // Front subframe: at front axle centerline, steered
+    auto front = std::make_unique<Subframe>("FrontSubframe",
+        glm::vec3(0.f, 0.f, 1.35f), true, false);
+
+    // Rear subframe: at rear axle centerline, driven (RWD)
+    auto rear = std::make_unique<Subframe>("RearSubframe",
+        glm::vec3(0.f, 0.f, -1.25f), false, true);
+
+    body_          = body.get();
+    splitter_      = splitter.get();
+    rearWing_      = rearWing.get();
+    frontSubframe_ = front.get();
+    rearSubframe_  = rear.get();
+
+    components_.push_back(std::move(body));
+    components_.push_back(std::move(splitter));
+    components_.push_back(std::move(rearWing));
+    components_.push_back(std::move(front));
+    components_.push_back(std::move(rear));
+
+    for (auto& c : components_) {
+        c->init();
     }
-
-    // Front calipers: larger pistons + bigger discs than rear
-    wheels_[0].brakePistonAreaM2 = 0.0040f;  // 40 cm²
-    wheels_[1].brakePistonAreaM2 = 0.0040f;
-    wheels_[0].brakeDiscRadiusM  = 0.16f;    // 320mm disc
-    wheels_[1].brakeDiscRadiusM  = 0.16f;
-    // Rear
-    wheels_[2].brakePistonAreaM2 = 0.0030f;  // 30 cm²
-    wheels_[3].brakePistonAreaM2 = 0.0030f;
-    wheels_[2].brakeDiscRadiusM  = 0.15f;    // 300mm disc
-    wheels_[3].brakeDiscRadiusM  = 0.15f;
-
-    // Subframe setup
-    float mountY = -Vehicle::BODY_HALF_H;
-
-    front_.wheel[0] = &wheels_[0];
-    front_.wheel[1] = &wheels_[1];
-    front_.suspension[0].mountPoint = {-Vehicle::BODY_HALF_W, mountY,  Vehicle::FRONT_AXLE};
-    front_.suspension[1].mountPoint = { Vehicle::BODY_HALF_W, mountY,  Vehicle::FRONT_AXLE};
-
-    rear_.wheel[0] = &wheels_[2];
-    rear_.wheel[1] = &wheels_[3];
-    rear_.suspension[0].mountPoint = {-Vehicle::BODY_HALF_W, mountY, -Vehicle::REAR_AXLE};
-    rear_.suspension[1].mountPoint = { Vehicle::BODY_HALF_W, mountY, -Vehicle::REAR_AXLE};
-    rear_.lsdLockRatio = 0.25f;  // mild 1-way LSD on rear axle
-
-    // Body inertia
-    body_.computeInertia();
-    body_.pos.y = Vehicle::BODY_Y;
-
-    // Drivetrain (engine, gearbox)
-    drivetrain_.init();
 }
 
+// ---------------------------------------------------------------------------
 void VehiclePhysics::reset()
 {
-    body_.reset();
-    front_.steerAngle = 0.f;
+    state_ = {};
     drivetrain_.reset();
-    for (auto& w : wheels_) {
-        w.angularVel = 0.f;
-        w.tire->deflection = 0.f;
-        w.tire->normalLoad = 0.f;
+    for (auto& c : components_) {
+        c->reset();
     }
 }
 
+// ---------------------------------------------------------------------------
+ComponentInput VehiclePhysics::buildRootInput(float dt) const
+{
+    return {
+        .dt           = dt,
+        .position     = state_.position,
+        .velocity     = state_.velocity,
+        .angularVel   = state_.angularVel,
+        .bodyRotation = state_.bodyRotation,
+        .normalLoad   = 0.f,
+        .surfaceGrip  = surfaceGrip_,
+        .groundNormal = groundNormal_,
+    };
+}
+
+// ---------------------------------------------------------------------------
+Drawable VehiclePhysics::collectDrawables() const
+{
+    ComponentInput ci{};
+    ci.position     = state_.position;
+    ci.velocity     = state_.velocity;
+    ci.angularVel   = state_.angularVel;
+    ci.bodyRotation = state_.bodyRotation;
+
+    Drawable all;
+    for (auto& c : components_) {
+        all.merge(c->collectDrawables(ci));
+    }
+    return all;
+}
+
+// ---------------------------------------------------------------------------
+void VehiclePhysics::routeControls(const InputState& input)
+{
+    // --- Steering: front tires only ---
+    float steerAngle = input.steer * maxSteerAngle_;
+    frontSubframe_->left()->tire()->setSteerAngle(steerAngle);
+    frontSubframe_->right()->tire()->setSteerAngle(steerAngle);
+    rearSubframe_->left()->tire()->setSteerAngle(0.f);
+    rearSubframe_->right()->tire()->setSteerAngle(0.f);
+
+    // --- Drivetrain: rear tires only (RWD) ---
+    // Estimate forward speed in body frame
+    glm::vec3 bodyVel = glm::transpose(state_.bodyRotation) * state_.velocity;
+    float fwdSpeed = bodyVel.z;
+    float tireRadius = rearSubframe_->left()->tire()->radius;
+
+    auto driveOut = drivetrain_.update(input.throttle, fwdSpeed, tireRadius);
+    rearSubframe_->left()->tire()->setDriveTorque(driveOut.leftTorqueNm);
+    rearSubframe_->right()->tire()->setDriveTorque(driveOut.rightTorqueNm);
+    frontSubframe_->left()->tire()->setDriveTorque(0.f);
+    frontSubframe_->right()->tire()->setDriveTorque(0.f);
+
+    // --- Brakes: all four wheels with bias ---
+    auto brakeOut = brakeSystem_.update(input.brake, input.handBrake);
+    frontSubframe_->left()->tire()->setBrakeTorque(brakeOut.fl);
+    frontSubframe_->right()->tire()->setBrakeTorque(brakeOut.fr);
+    rearSubframe_->left()->tire()->setBrakeTorque(brakeOut.rl);
+    rearSubframe_->right()->tire()->setBrakeTorque(brakeOut.rr);
+}
+
+// ---------------------------------------------------------------------------
 void VehiclePhysics::update(float dt, const InputState& input)
 {
-    // --- Body velocity in body-local frame ---
-    BodyState bs = body_.bodyState(0.f);
-    glm::vec3 fwd = bs.forwardDir();
-    glm::vec3 rht = bs.rightDir();
-    body_.forwardSpeed = glm::dot(body_.vel, fwd);
-    float lateralSpeed = glm::dot(body_.vel, rht);
-    bs.forwardSpeed = body_.forwardSpeed;
-    bs.lateralSpeed = lateralSpeed;
+    // Route pedal/wheel inputs through Drivetrain, BrakeSystem, and steering
+    routeControls(input);
 
-    // --- Steering ---
-    front_.steerAngle = drivetrain_.computeSteerAngle(
-        input.steer, front_.steerAngle, body_.forwardSpeed, dt);
-    rear_.steerAngle = 0.f;
+    ComponentInput rootInput = buildRootInput(dt);
 
-    // --- Engine / drive torque (RWD: rear wheels) ---
-    float perWheelDrive = drivetrain_.computeDriveTorque(
-        input.throttle, input.clutchIn, wheels_[2], wheels_[3], dt);
-
-    // --- Query terrain at wheel positions ---
-    float groundY[4];
-    glm::vec3 surfNormal[4];
-
-    for (int i = 0; i < 4; ++i) {
-        Subframe& sf = (i < 2) ? front_ : rear_;
-        int side = (i < 2) ? i : i - 2;
-        glm::vec3 wpos = sf.wheelWorldPos(side, bs);
-
-        if (terrain_) {
-            groundY[i]   = terrain_->heightAt(wpos.x, wpos.z);
-            surfNormal[i] = terrain_->normalAt(wpos.x, wpos.z);
-        } else {
-            groundY[i]   = 0.f;
-            surfNormal[i] = {0.f, 1.f, 0.f};
-        }
+    // Gather forces from all top-level components.
+    // Each component returns force+torque about its own attachment point.
+    // We must also add the moment arm torque: cross(attachPt, force).
+    ComponentOutput totalOutput;
+    for (auto& c : components_) {
+        ComponentOutput out = c->update(rootInput);
+        totalOutput.force  += out.force;
+        totalOutput.torque += out.torque;
+        totalOutput.torque += glm::cross(c->attachmentPoint(), out.force);
     }
 
-    // --- Brake pressure with proportioning valve ---
-    float frontPressure, rearPressure;
-    drivetrain_.computeBrakePressure(input.brake, frontPressure, rearPressure);
+    // --- Integration --------------------------------------------------------
+    float totalMass = body_ ? body_->totalMassKg() : 1300.f;
+    if (totalMass < 1.f) {
+        totalMass = 1.f;
+    }
 
-    // Handbrake: rear-only, full pressure, bypasses proportioning valve
-    float handbrakeP = input.handbrake * Drivetrain::MAX_BRAKE_PRESSURE;
-    rearPressure = std::max(rearPressure, handbrakeP);
+    // Linear
+    glm::vec3 accel = totalOutput.force / totalMass;
+    state_.velocity += accel * dt;
+    state_.position += state_.velocity * dt;
 
-    float frontBrake[2] = { frontPressure, frontPressure };
-    float rearBrake[2]  = { rearPressure,  rearPressure  };
+    // Angular (simplified: use scalar inertia for now)
+    glm::vec3 inertia = body_ ? body_->inertia() : glm::vec3(500.f, 2000.f, 500.f);
+    glm::vec3 angAccel = totalOutput.torque / inertia;  // component-wise
+    state_.angularVel += angAccel * dt;
+    state_.angularVel *= 0.98f;  // angular damping
 
-    // --- Subframe force computation ---
-    float frontDrive[2] = {0.f, 0.f};
-    auto frontResult = front_.computeForces(
-        bs, &groundY[0], &surfNormal[0], frontDrive, frontBrake, dt);
+    // Update heading/pitch/roll from angular velocity
+    state_.heading += state_.angularVel.y * dt;
+    state_.pitch   += state_.angularVel.x * dt;
+    state_.roll    += state_.angularVel.z * dt;
 
-    float rearDrive[2] = {perWheelDrive, perWheelDrive};
-    auto rearResult = rear_.computeForces(
-        bs, &groundY[2], &surfNormal[2], rearDrive, rearBrake, dt);
+    // Rebuild rotation matrix from Euler angles
+    float ch = std::cos(state_.heading);
+    float sh = std::sin(state_.heading);
+    float cp = std::cos(state_.pitch);
+    float sp = std::sin(state_.pitch);
+    float cr = std::cos(state_.roll);
+    float sr = std::sin(state_.roll);
 
-    // --- Accumulate forces on body ---
-    glm::vec3 bodyForce{0.f, -body_.massKg * Body::GRAVITY, 0.f};
-    bodyForce += frontResult.bodyForce + rearResult.bodyForce;
-
-    glm::vec3 bodyTorque = frontResult.bodyTorque + rearResult.bodyTorque;
-
-    // --- Body collider (wall contact) ---
-    if (terrain_)
-        body_.applyCollider(*terrain_, bs, bodyForce, bodyTorque);
-
-    // --- Aerodynamic forces ---
-    body_.applyAero(fwd, bodyForce, bodyTorque);
-
-    // --- Integrate ---
-    body_.integrate(bodyForce, bodyTorque, totalMass(), dt);
-
-    // Update forward speed after integration
-    body_.forwardSpeed = glm::dot(body_.vel, bs.forwardDir());
-}
-
-void VehiclePhysics::fillVehicle(Vehicle& veh) const
-{
-    veh.position = body_.pos;
-    veh.heading  = body_.heading;
-    veh.pitch    = body_.pitch;
-    veh.roll     = body_.roll;
-    veh.frontSteerAngle = front_.steerAngle;
-
-    BodyState bs = body_.bodyState(0.f);
-
-    veh.bodyRotation = glm::mat3(
-        bs.rotateLocal({1,0,0}),
-        bs.rotateLocal({0,1,0}),
-        bs.rotateLocal({0,0,1})
+    state_.bodyRotation = glm::mat3(
+        glm::vec3( ch*cr + sh*sp*sr, cp*sr, -sh*cr + ch*sp*sr),
+        glm::vec3(-ch*sr + sh*sp*cr, cp*cr,  sh*sr + ch*sp*cr),
+        glm::vec3( sh*cp,           -sp,     ch*cp)
     );
-
-    for (int i = 0; i < 4; ++i) {
-        const Subframe& sf = (i < 2) ? front_ : rear_;
-        int side = (i < 2) ? i : i - 2;
-        veh.wheelPos[i] = sf.wheelWorldPos(side, bs);
-        veh.mountPos[i] = sf.mountWorldPos(side, bs);
-
-        veh.wheelSlipRatio[i]    = wheels_[i].lastSlipRatio;
-        veh.wheelSlipAngle[i]    = wheels_[i].lastSlipAngle;
-        veh.wheelNormalLoad[i]   = wheels_[i].tire->normalLoad;
-        veh.wheelContactWidth[i] = wheels_[i].tire->width;
-    }
 }
 
-float VehiclePhysics::totalMass() const
+// ---------------------------------------------------------------------------
+void VehiclePhysics::applyCollisions(const std::vector<CollisionContact>& contacts, float dt)
 {
-    float m = body_.massKg;
-    for (int i = 0; i < 4; ++i) m += wheels_[i].massKg;
-    return m;
+    if (body_) {
+        body_->applyCollisionResponse(contacts, state_, dt);
+    }
 }

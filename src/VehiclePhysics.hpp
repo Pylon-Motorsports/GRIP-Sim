@@ -1,56 +1,69 @@
 #pragma once
-#include "Wheel.hpp"
-#include "BrushTire.hpp"
-#include "LuGreTire.hpp"
-#include "Subframe.hpp"
+#include "VehiclePhysicsComponent.hpp"
 #include "Body.hpp"
+#include "AeroSurface.hpp"
+#include "Subframe.hpp"
 #include "Drivetrain.hpp"
-#include "Input.hpp"
-#include "Vehicle.hpp"
-#include "Terrain.hpp"
+#include "BrakeSystem.hpp"
 #include <glm/glm.hpp>
-#include <vector>
-#include <memory>
 
-// VehiclePhysics: thin orchestrator that wires Body, Drivetrain,
-// Subframes, and Wheels together each timestep.
+struct InputState {
+    float steer     = 0.f;   // -1..1
+    float throttle  = 0.f;   //  0..1
+    float brake     = 0.f;   //  0..1
+    float handBrake = 0.f;   //  0..1
+};
+
+struct VehicleState {
+    glm::vec3 position    { 0.f };
+    glm::vec3 velocity    { 0.f };
+    glm::vec3 angularVel  { 0.f };
+    glm::mat3 bodyRotation{ 1.f };
+    float     heading     { 0.f };
+    float     pitch       { 0.f };
+    float     roll        { 0.f };
+};
+
 class VehiclePhysics {
 public:
     void init();
+    void reset();
     void update(float dt, const InputState& input);
 
-    // Export state for rendering
-    void fillVehicle(Vehicle& veh) const;
+    const VehicleState& state() const { return state_; }
+    VehicleState& mutableState() { return state_; }
 
-    // Set terrain for ground queries (nullptr = flat ground)
-    void setTerrain(const Terrain* t) { terrain_ = t; }
+    void setSurfaceGrip(float g) { surfaceGrip_ = g; }
+    void setGroundNormal(glm::vec3 n) { groundNormal_ = n; }
+    void applyCollisions(const std::vector<CollisionContact>& contacts, float dt);
 
-    // Reset vehicle to starting position
-    void reset();
+    Drawable collectDrawables() const;
 
-    // Read-only accessors for HUD / tests
-    float getForwardSpeed()   const { return body_.forwardSpeed; }
-    float getEngineRpm()      const { return drivetrain_.engine.rpm; }
-    float getEngineRpmLimit() const { return drivetrain_.engine.rpmLimit; }
-    int   getGear()           const { return drivetrain_.engine.getGear(); }
-    float getHeading()        const { return body_.heading; }
-    float getYawRate()        const { return body_.yawRate; }
-    glm::vec3 getVelocity()  const { return body_.vel; }
-
-    // Speedometer: average speed from front (non-driven) wheels
-    float getFrontWheelSpeed() const {
-        return (wheels_[0].groundSpeed() + wheels_[1].groundSpeed()) * 0.5f;
-    }
+    Body*        body()          { return body_; }
+    AeroSurface* splitter()      { return splitter_; }
+    AeroSurface* rearWing()      { return rearWing_; }
+    Subframe*    frontSubframe() { return frontSubframe_; }
+    Subframe*    rearSubframe()  { return rearSubframe_; }
+    Drivetrain*  drivetrain()    { return &drivetrain_; }
+    BrakeSystem* brakeSystem()   { return &brakeSystem_; }
 
 private:
-    Body       body_;
-    Drivetrain drivetrain_;
-    Wheel      wheels_[4];
-    Subframe   front_;   // wheels 0 (left), 1 (right)
-    Subframe   rear_;    // wheels 2 (left), 3 (right)
+    VehicleState state_;
 
-    // Active terrain (owned externally)
-    const Terrain* terrain_ = nullptr;
+    std::vector<std::unique_ptr<VehiclePhysicsComponent>> components_;
+    Body*        body_          = nullptr;
+    AeroSurface* splitter_      = nullptr;
+    AeroSurface* rearWing_      = nullptr;
+    Subframe*    frontSubframe_ = nullptr;
+    Subframe*    rearSubframe_  = nullptr;
 
-    float totalMass() const;
+    Drivetrain  drivetrain_;
+    BrakeSystem brakeSystem_;
+
+    float maxSteerAngle_ = 0.55f;  // ~31 degrees
+    float surfaceGrip_   = 1.f;
+    glm::vec3 groundNormal_ { 0.f, 1.f, 0.f };
+
+    ComponentInput buildRootInput(float dt) const;
+    void routeControls(const InputState& input);
 };

@@ -2,13 +2,149 @@
 #include "Renderer.hpp"
 #include "Vehicle.hpp"
 #include "VehiclePhysics.hpp"
-#include "Input.hpp"
 #include "Scenario.hpp"
 #include "TireTrail.hpp"
 #include "AudioEngine.hpp"
+#include "Terrain.hpp"
 #include <SDL2/SDL.h>
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
+
+// ---------------------------------------------------------------------------
+// Terrain interaction helpers
+// ---------------------------------------------------------------------------
+
+struct WheelInfo {
+    Subframe* subframe;
+    SuspensionCorner* corner;
+};
+
+static glm::vec3 wheelLocalPos(const WheelInfo& w) {
+    return w.subframe->attachmentPoint()
+         + w.corner->attachmentPoint()
+         + w.corner->tireOffset;
+}
+
+static glm::vec3 mountLocalPos(const WheelInfo& w) {
+    return w.subframe->attachmentPoint()
+         + w.corner->attachmentPoint();
+}
+
+// Set spring compressions from terrain height at each wheel.
+// Returns per-wheel ground height for ground clamp logic.
+static void updateSprings(VehiclePhysics& physics, const Terrain& terrain,
+                           float prevComp[4], float dt)
+{
+    const auto& st = physics.state();
+
+    WheelInfo wheels[4] = {
+        { physics.frontSubframe(), physics.frontSubframe()->left()  },
+        { physics.frontSubframe(), physics.frontSubframe()->right() },
+        { physics.rearSubframe(),  physics.rearSubframe()->left()   },
+        { physics.rearSubframe(),  physics.rearSubframe()->right()  },
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        glm::vec3 local = wheelLocalPos(wheels[i]);
+        glm::vec3 world = st.position + st.bodyRotation * local;
+
+        float groundH = terrain.heightAt(world.x, world.z);
+        float tireR   = wheels[i].corner->tire()->radius;
+
+        // Compression: how much ground pushes tire up from rest position
+        float comp = (groundH + tireR) - world.y;
+        comp = std::max(0.f, comp);
+
+        // Compression velocity from finite difference
+        float compVel = (dt > 0.f) ? (comp - prevComp[i]) / dt : 0.f;
+        prevComp[i] = comp;
+
+        wheels[i].corner->spring()->setCompression(comp, compVel);
+    }
+}
+
+// Check body collider corners against terrain, build collision contacts.
+static std::vector<CollisionContact> checkBodyCollisions(
+    const VehiclePhysics& physics, const Terrain& terrain)
+{
+    std::vector<CollisionContact> contacts;
+    auto* body = const_cast<VehiclePhysics&>(physics).body();
+    if (!body) return contacts;
+
+    const auto& st = physics.state();
+    auto corners = body->colliderCorners();
+
+    for (auto& local : corners) {
+        // Body-local to world: collider is relative to body CG attachment point
+        glm::vec3 world = st.position + st.bodyRotation * (body->attachmentPoint() + local);
+        TerrainContact tc = terrain.contactAt(world);
+        if (tc.penetration > 0.f) {
+            contacts.push_back({ world, tc.normal, tc.penetration });
+        }
+    }
+    return contacts;
+}
+
+// Ground clamp: prevent vehicle from falling through terrain.
+static void groundClamp(VehiclePhysics& physics, const Terrain& terrain)
+{
+    auto& st = physics.mutableState();
+
+    // Check the lowest point of the body (bottom center)
+    float groundH = terrain.heightAt(st.position.x, st.position.z);
+
+    // Minimum vehicle height: tire radius (wheels touch ground)
+    float minY = groundH + 0.31f;  // tire radius
+    if (st.position.y < minY) {
+        st.position.y = minY;
+        if (st.velocity.y < 0.f)
+            st.velocity.y = 0.f;
+    }
+}
+
+// Fill the Vehicle rendering struct from physics state + component tree.
+static void fillVehicle(Vehicle& veh, const VehiclePhysics& physics)
+{
+    const auto& st = physics.state();
+    veh.position     = st.position;
+    veh.heading      = st.heading;
+    veh.pitch        = st.pitch;
+    veh.roll         = st.roll;
+    veh.bodyRotation = st.bodyRotation;
+
+    auto* phys = const_cast<VehiclePhysics*>(&physics);
+    veh.frontSteerAngle = phys->frontSubframe()->left()->tire()->steerAngle();
+
+    WheelInfo wheels[4] = {
+        { phys->frontSubframe(), phys->frontSubframe()->left()  },
+        { phys->frontSubframe(), phys->frontSubframe()->right() },
+        { phys->rearSubframe(),  phys->rearSubframe()->left()   },
+        { phys->rearSubframe(),  phys->rearSubframe()->right()  },
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        glm::vec3 wLocal = wheelLocalPos(wheels[i]);
+        glm::vec3 mLocal = mountLocalPos(wheels[i]);
+
+        // Account for spring compression pushing wheel up
+        float comp = wheels[i].corner->spring()->compression;
+        wLocal.y += comp;
+
+        veh.wheelPos[i] = st.position + st.bodyRotation * wLocal;
+        veh.mountPos[i] = st.position + st.bodyRotation * mLocal;
+
+        const auto& to = wheels[i].corner->tire()->tireOutput();
+        veh.wheelSlipRatio[i]   = to.slipRatio;
+        veh.wheelSlipAngle[i]   = to.slipAngleRad;
+        veh.wheelNormalLoad[i]  = to.normalLoadN;
+        veh.wheelContactWidth[i] = wheels[i].corner->tire()->width;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 int main(int /*argc*/, char** /*argv*/)
 {
@@ -47,7 +183,6 @@ int main(int /*argc*/, char** /*argv*/)
     // Build the playground
     Playground playground = createPlayground();
     renderer.uploadTerrain(ctx, playground.terrain);
-    physics.setTerrain(&playground.terrain);
 
     // Try to open a game controller
     SDL_GameController* controller = nullptr;
@@ -65,6 +200,9 @@ int main(int /*argc*/, char** /*argv*/)
     float accumulator = 0.f;
     Uint64 lastTick = SDL_GetPerformanceCounter();
     Uint64 freq     = SDL_GetPerformanceFrequency();
+
+    // Previous spring compressions for velocity estimation
+    float prevComp[4] = {};
 
     bool running = true;
     while (running) {
@@ -86,6 +224,7 @@ int main(int /*argc*/, char** /*argv*/)
                     && e.cbutton.button == SDL_CONTROLLER_BUTTON_START)) {
                 physics.reset();
                 tireTrails.clear();
+                for (float& c : prevComp) c = 0.f;
             }
 
             if (e.type == SDL_CONTROLLERDEVICEADDED && !controller) {
@@ -108,6 +247,7 @@ int main(int /*argc*/, char** /*argv*/)
         if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  input.brake    = 1.f;
         if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  input.steer    = -1.f;
         if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) input.steer    =  1.f;
+        if (keys[SDL_SCANCODE_SPACE]) input.handBrake = 1.f;
 
         if (controller) {
             float rt = SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.f;
@@ -116,36 +256,49 @@ int main(int /*argc*/, char** /*argv*/)
             if (rt > 0.05f) input.throttle = rt;
             if (lt > 0.05f) input.brake    = lt;
             if (std::abs(lx) > 0.05f) input.steer = lx;
-            input.clutchIn = SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
             if (SDL_GameControllerGetButton(controller, SDL_CONTROLLER_BUTTON_B))
-                input.handbrake = 1.f;
+                input.handBrake = 1.f;
         }
-
-        // Keyboard clutch: C key, handbrake: Space
-        if (keys[SDL_SCANCODE_C]) input.clutchIn = true;
-        if (keys[SDL_SCANCODE_SPACE]) input.handbrake = 1.f;
 
         // Fixed-timestep physics
         while (accumulator >= PHYSICS_DT) {
+            // 1. Set spring compressions from terrain
+            updateSprings(physics, playground.terrain, prevComp, PHYSICS_DT);
+
+            // 2. Set ground normal under vehicle center
+            glm::vec3 gn = playground.terrain.normalAt(
+                physics.state().position.x, physics.state().position.z);
+            physics.setGroundNormal(gn);
+
+            // 3. Run physics update (forces, integration)
             physics.update(PHYSICS_DT, input);
+
+            // 4. Body collision against terrain
+            auto contacts = checkBodyCollisions(physics, playground.terrain);
+            if (!contacts.empty())
+                physics.applyCollisions(contacts, PHYSICS_DT);
+
+            // 5. Ground clamp
+            groundClamp(physics, playground.terrain);
+
             accumulator -= PHYSICS_DT;
         }
 
-        physics.fillVehicle(vehicle);
+        // Fill rendering struct from physics
+        fillVehicle(vehicle, physics);
         tireTrails.update(vehicle);
 
         // Update audio from physics state
-        audio.setEngineRpm(physics.getEngineRpm(), physics.getEngineRpmLimit(),
-                           input.throttle);
+        auto* dt_ptr = physics.drivetrain();
+        audio.setEngineRpm(dt_ptr->engineRpm, dt_ptr->redlineRpm, input.throttle);
         {
             float maxSR = 0.f, maxSA = 0.f;
             for (int i = 0; i < 4; ++i) {
                 maxSR = std::max(maxSR, std::abs(vehicle.wheelSlipRatio[i]));
                 maxSA = std::max(maxSA, std::abs(vehicle.wheelSlipAngle[i]));
             }
-            // Scale by vehicle speed: tires don't squeal at walking speed.
-            // Use body speed, not wheel speed (wheels read zero when locked).
-            float speed = std::abs(physics.getForwardSpeed());
+            glm::vec3 bodyVel = glm::transpose(physics.state().bodyRotation) * physics.state().velocity;
+            float speed = std::abs(bodyVel.z);
             float speedGate = std::clamp(speed / 3.f, 0.f, 1.f);
             audio.setTireSlip(maxSR * speedGate, maxSA * 57.2958f * speedGate);
         }
@@ -162,10 +315,11 @@ int main(int /*argc*/, char** /*argv*/)
 
         // Build HUD data
         HudData hud;
-        hud.speedKmh       = std::abs(physics.getFrontWheelSpeed()) * 3.6f;
-        hud.rpm            = physics.getEngineRpm();
-        hud.rpmLimit       = physics.getEngineRpmLimit();
-        hud.gear           = physics.getGear();
+        glm::vec3 bodyVel = glm::transpose(physics.state().bodyRotation) * physics.state().velocity;
+        hud.speedKmh = std::abs(bodyVel.z) * 3.6f;
+        hud.rpm      = dt_ptr->engineRpm;
+        hud.rpmLimit = dt_ptr->redlineRpm;
+        hud.gear     = dt_ptr->currentGear + 1;  // 0-indexed to 1-indexed
 
         VkCommandBuffer cmd = ctx.beginFrame();
         if (cmd) {

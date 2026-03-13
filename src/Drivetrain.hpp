@@ -1,33 +1,45 @@
 #pragma once
-#include "Engine.hpp"
-#include "Wheel.hpp"
+#include <array>
+#include <cmath>
 
-// Drivetrain: engine + transmission + brake hydraulics + steering input.
-// RWD layout: drive torque goes to rear axle only.
-struct Drivetrain {
-    static constexpr float MAX_STEER_ANGLE = 0.61f;
-    static constexpr float STEER_DEADZONE  = 0.05f;
-    static constexpr float MAX_STEER_RATE  = 2.5f;
+class Drivetrain {
+public:
+    // Engine
+    float maxEngineTorqueNm = 205.f;   // BRZ peak torque
+    float idleRpm           = 800.f;
+    float redlineRpm        = 7400.f;
+    float shiftUpRpm        = 6500.f;
+    float shiftDownRpm      = 2500.f;
 
-    static constexpr float MAX_BRAKE_PRESSURE = 4.0e6f;
-    static constexpr float BRAKE_BIAS_FRONT   = 0.60f;
-    static constexpr float PROP_VALVE_KNEE    = 0.4f;
-    static constexpr float PROP_VALVE_SLOPE   = 0.3f;
+    // Gearbox (BRZ 6-speed)
+    static constexpr int NUM_GEARS = 6;
+    std::array<float, NUM_GEARS> gearRatios = {
+        3.626f, 2.188f, 1.541f, 1.213f, 1.000f, 0.767f
+    };
+    float finalDriveRatio   = 4.100f;
+    float efficiency        = 0.90f;   // drivetrain losses
 
-    Engine engine;
+    // LSD
+    float lsdTorqueBias     = 2.0f;    // 1.0 = open diff, higher = tighter LSD
 
-    void init();
+    // State
+    int   currentGear       = 0;       // 0-based index
+    float engineRpm         = 800.f;
 
-    float computeDriveTorque(float throttle, bool clutchIn,
-                             const Wheel& rearL, const Wheel& rearR, float dt);
+    struct Output {
+        float leftTorqueNm  = 0.f;
+        float rightTorqueNm = 0.f;
+    };
 
-    void computeBrakePressure(float pedal,
-                              float& frontPressure, float& rearPressure) const;
-
-    float computeSteerAngle(float steerInput, float currentAngle,
-                            float forwardSpeed, float dt) const;
+    // Compute per-wheel drive torques.
+    // throttle: 0..1
+    // vehicleFwdSpeed: forward speed in m/s (used for RPM estimation)
+    // tireRadius: wheel radius in m
+    Output update(float throttle, float vehicleFwdSpeed, float tireRadius);
 
     void reset();
 
-    static float applyDeadzone(float value, float deadzone);
+private:
+    float engineTorqueAtRpm(float rpm) const;
+    void autoShift(float rpm);
 };

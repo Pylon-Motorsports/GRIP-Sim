@@ -56,14 +56,17 @@ set(SOURCES
     src/VulkanContext.cpp
     src/Renderer.cpp
     src/VehiclePhysics.cpp
+    src/VehiclePhysicsComponent.cpp
     src/AudioEngine.cpp
     src/Terrain.cpp
     src/Tire.cpp
-    src/BrushTire.cpp
-    src/LuGreTire.cpp
-    src/Wheel.cpp
-    src/Engine.cpp
+    src/SimpleTire.cpp
+    src/SpringDamper.cpp
+    src/SuspensionCorner.cpp
     src/Drivetrain.cpp
+    src/BrakeSystem.cpp
+    src/AeroSurface.cpp
+    src/Mass.cpp
     src/Body.cpp
     src/Subframe.cpp
     src/TireTrail.cpp
@@ -120,52 +123,26 @@ add_custom_command(TARGET GRIP-Sim POST_BUILD
 # Tests (no Vulkan/SDL dependency — pure physics)
 # ---------------------------------------------------------------------------
 
-add_executable(EngineTest
-    tests/engine_test.cpp
-    src/Engine.cpp
-)
-target_include_directories(EngineTest PRIVATE src)
-target_link_libraries(EngineTest PRIVATE glm::glm)
-
-add_executable(TireTest
-    tests/tire_test.cpp
-    src/Terrain.cpp
-    src/Tire.cpp
-    src/BrushTire.cpp
-)
-target_include_directories(TireTest PRIVATE src)
-target_link_libraries(TireTest PRIVATE glm::glm)
-
-add_executable(VehicleTest
-    tests/vehicle_test.cpp
+set(PHYSICS_SOURCES
     src/VehiclePhysics.cpp
-    src/Terrain.cpp
+    src/VehiclePhysicsComponent.cpp
     src/Tire.cpp
-    src/BrushTire.cpp
-    src/Wheel.cpp
-    src/Engine.cpp
+    src/SimpleTire.cpp
+    src/SpringDamper.cpp
+    src/SuspensionCorner.cpp
     src/Drivetrain.cpp
+    src/BrakeSystem.cpp
+    src/AeroSurface.cpp
+    src/Mass.cpp
     src/Body.cpp
     src/Subframe.cpp
+    src/Terrain.cpp
     src/Scenario.cpp
 )
-target_include_directories(VehicleTest PRIVATE src)
-target_link_libraries(VehicleTest PRIVATE glm::glm)
 
 add_executable(ComponentTest
-    temp/component_test.cpp
-    temp/VehiclePhysicsComponent.cpp
-    temp/Mass.cpp
-    temp/AeroSurface.cpp
-    temp/Tire.cpp
-    temp/SimpleTire.cpp
-    temp/SpringDamper.cpp
-    temp/SuspensionCorner.cpp
-    temp/Subframe.cpp
-    temp/Body.cpp
-    temp/Drivetrain.cpp
-    temp/BrakeSystem.cpp
-    temp/Vehicle.cpp
+    tests/component_test.cpp
+    ${PHYSICS_SOURCES}
 )
-target_include_directories(ComponentTest PRIVATE temp)
+target_include_directories(ComponentTest PRIVATE src tests)
 target_link_libraries(ComponentTest PRIVATE glm::glm)

@@ -1,77 +1,45 @@
 #pragma once
-#include <glm/glm.hpp>
+#include "VehiclePhysicsComponent.hpp"
 
-// Base tire class: radial spring-damper with geometric contact patch.
-//
-// The single source of truth is radial deflection 'd': how much the
-// tire's circular cross-section overlaps the ground plane.
-//
-//   d = (groundY + R) - hubY
-//
-// Physical limits:
-//   d <= 0:      no contact, zero forces
-//   0 < d < dMax: sidewall deforming, spring-damper active
-//   d >= dMax:    rim contact — tire can't compress further
-//
-// Slip force computation is delegated to derived classes (BrushTire,
-// LuGreTire) via the virtual computeSlipForces() method.
+// Slip and force outputs — available after update() for rendering, audio, telemetry.
+struct TireOutput {
+    float slipAngleRad  = 0.f;   // lateral slip angle (rad), signed
+    float slipRatio     = 0.f;   // longitudinal slip ratio (unitless), signed
+    float lateralForceN = 0.f;   // lateral force magnitude (N)
+    float longForceN    = 0.f;   // longitudinal force magnitude (N)
+    float normalLoadN   = 0.f;   // vertical load on this tire (N)
+    bool  sliding       = false; // true when combined slip exceeds ~80% of grip circle
+};
 
-class Tire {
+class Tire : public VehiclePhysicsComponent {
 public:
-    virtual ~Tire() = default;
+    float radius      = 0.31f;   // m
+    float width       = 0.215f;  // m
+    bool  steered     = false;   // informational (routing handled externally)
+    bool  driven      = false;   // informational (routing handled externally)
 
-    // --- Geometry ---
-    float radius        = 0.30f;   // unloaded outer radius (m)
-    float width         = 0.20f;   // tread width (m)
-    float maxDeflection = 0.025f;  // dMax: rim contact limit (m), ~25mm for off-road
+    Tire(std::string name, glm::vec3 attachPt, bool steered_, bool driven_);
 
-    // --- Radial spring-damper (sidewall + inflation pressure) ---
-    float radialStiffness  = 200000.f;   // N/m (typical car tire 150k-250k)
-    float radialDamping    = 2000.f;     // N·s/m (combined tire + suspension damping)
-    float bumpStopStiffness = 20000000.f; // N/m² (progressive beyond maxDeflection)
+    // Per-wheel inputs — set by Drivetrain, BrakeSystem, Vehicle before update()
+    void  setDriveTorque(float nm) { driveTorqueNm_ = nm; }
+    void  setBrakeTorque(float nm) { brakeTorqueNm_ = nm; }
+    void  setSteerAngle(float rad) { steerAngle_    = rad; }
 
-    // --- Friction ---
-    float mu                  = 1.15f;   // peak friction coefficient (200tw street tire, dry tarmac)
-    float muSliding           = 0.85f;   // sliding/locked friction (~74% of peak)
-    float rollingResistCoeff  = 0.015f;  // Crr
+    float driveTorque() const { return driveTorqueNm_; }
+    float brakeTorque() const { return brakeTorqueNm_; }
+    float steerAngle()  const { return steerAngle_; }
 
-    // --- Per-step state (read by external code for HUD, etc.) ---
-    float deflection         = 0.f;  // current d (m)
-    float normalLoad         = 0.f;  // current Fn (N)
-    float contactPatchLength = 0.f;  // chord length (m)
-    float contactPatchArea   = 0.f;  // width × chord (m²)
+    // Slip/force outputs — valid after update()
+    const TireOutput& tireOutput() const { return tireOutput_; }
+    float slipAngle()  const { return tireOutput_.slipAngleRad; }
+    float slipRatio()  const { return tireOutput_.slipRatio; }
+    bool  isSliding()  const { return tireOutput_.sliding; }
 
-    float computeDeflection(float hubY, float groundY) const;
-    float computeNormalForce(float d, float dDot) const;
-    void  updateContactPatch(float d);
-    void  frictionCircleClamp(float& longForce, float& latForce, float Fn) const;
-    float computeRollingResistance(float Fn, float forwardSpeed) const;
+protected:
+    Drawable generateDrawable(const ComponentInput& input) const override;
 
-    virtual void computeSlipForces(float slipRatio, float slipAngle,
-                                   float vLong, float vLat, float wheelSpeed,
-                                   float Fn, float dt,
-                                   float& Fx, float& Fy) = 0;
-
-    // --- Volumetric contact interface (PressureTire) ---
-    virtual bool usesVolumetricContact() const { return false; }
-
-    struct VolumetricInput {
-        glm::vec3 hubWorldPos;
-        glm::vec3 axleWorldDir;
-        glm::vec3 forwardDir;
-        glm::vec3 hubVelocity;
-        float vLong, vLat;
-        float wheelAngularVel;
-    };
-
-    struct VolumetricResult {
-        glm::vec3 worldForce{0.f};
-        float normalLoad = 0.f;
-        float contactArea = 0.f;
-        float wheelTorqueReaction = 0.f;
-        float rollingResistForce = 0.f;
-    };
-
-    virtual VolumetricResult computeVolumetricForces(
-        const VolumetricInput& /*in*/, float /*dt*/) { return {}; }
+    float driveTorqueNm_ = 0.f;
+    float brakeTorqueNm_ = 0.f;
+    float steerAngle_    = 0.f;
+    TireOutput tireOutput_;
 };

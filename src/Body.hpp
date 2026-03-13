@@ -1,58 +1,52 @@
 #pragma once
-#include "Vehicle.hpp"
-#include "Subframe.hpp"
-#include "Terrain.hpp"
-#include <glm/glm.hpp>
+#include "Mass.hpp"
+#include <array>
 
-// Rigid body: mass, inertia, linear/angular state, aerodynamics, integration.
-struct Body {
-    static constexpr float GRAVITY = 10.5f;  // slightly above real 9.81 for planted feel
+struct VehicleState;
 
-    static constexpr float BUSHING_PITCH_DAMPING = 5000.f;  // N·m·s/rad
-    static constexpr float BUSHING_ROLL_DAMPING  = 3000.f;  // N·m·s/rad
+struct CollisionContact {
+    glm::vec3 worldPoint;      // world-space contact point
+    glm::vec3 normal;          // surface normal (pointing INTO the body / away from obstacle)
+    float     penetration;     // positive = overlap depth (m)
+};
 
-    float massKg = 1200.f;
+class Body : public VehiclePhysicsComponent {
+public:
+    // Collision box dimensions (body-local, relative to CG)
+    static constexpr float COLLIDER_FRONT   =  1.65f;  // front bumper (overhangs front axle at 1.35)
+    static constexpr float COLLIDER_REAR    = -1.55f;  // rear bumper  (overhangs rear axle at -1.25)
+    static constexpr float COLLIDER_HALF_W  =  0.86f;  // half-width (track + wheel bulge)
+    static constexpr float COLLIDER_TOP_Y   =  0.25f;  // top of body (relative to CG at y=0.35)
+    static constexpr float COLLIDER_BOT_Y   = -0.10f;  // bottom of body (mid-wheel height)
 
-    // Linear state
-    glm::vec3 pos{0.f};
-    glm::vec3 vel{0.f};
-    float heading      = 0.f;
-    float forwardSpeed  = 0.f;
+    Body(glm::vec3 cg);
 
-    // Angular state
-    float pitch     = 0.f;
-    float roll      = 0.f;
-    float pitchRate = 0.f;
-    float rollRate  = 0.f;
-    float yawRate   = 0.f;
+    void init() override;
+    void reset() override;
 
-    // Moments of inertia
-    float pitchInertia = 0.f;
-    float rollInertia  = 0.f;
-    float yawInertia   = 0.f;
+    Mass* mass();
+    float totalMassKg() const;
+    glm::vec3 inertia() const;
 
-    // Aerodynamics
-    struct Aero {
-        float dragCdA       = 0.70f;
-        float downforceCfA  = 0.50f;
-        float frontSplit    = 0.50f;
-        float dragCopHeight = 0.18f;
-        static constexpr float AIR_DENSITY = 1.225f;
+    void setRestitution(float e) { restitution_ = e; }
 
-        float dynPressure(float speed) const {
-            return 0.5f * AIR_DENSITY * speed * speed;
-        }
-        float dragForce(float speed)      const { return dynPressure(speed) * dragCdA; }
-        float downforceTotal(float speed)  const { return dynPressure(speed) * downforceCfA; }
-    } aero;
+    // Returns 8 corners of the collision box in body-local coordinates.
+    std::array<glm::vec3, 8> colliderCorners() const;
 
-    void computeInertia();
-    BodyState bodyState(float lateralSpeed) const;
-    void applyAero(const glm::vec3& fwd,
-                   glm::vec3& bodyForce, glm::vec3& bodyTorque) const;
-    void applyCollider(const Terrain& terrain, const BodyState& bs,
-                       glm::vec3& bodyForce, glm::vec3& bodyTorque) const;
-    void integrate(const glm::vec3& bodyForce, const glm::vec3& bodyTorque,
-                   float totalMass, float dt);
-    void reset();
+    // Compute collision response from external contacts.
+    // Stores forces internally; consumed by compute() on next update().
+    void applyCollisionResponse(const std::vector<CollisionContact>& contacts,
+                                const VehicleState& state, float dt);
+
+protected:
+    ComponentOutput compute(const ComponentInput& input) override;
+
+private:
+    float restitution_  = 0.1f;   // 0=full absorb, 1=elastic bounce
+    float stiffness_    = 300000.f;
+    float damping_      = 40000.f;  // near-critical for 1300kg (absorb, don't bounce)
+    float maxPenetration_ = 0.15f; // clamp to prevent explosion
+
+    glm::vec3 pendingForce_  { 0.f };
+    glm::vec3 pendingTorque_ { 0.f };
 };
